@@ -230,7 +230,7 @@ func decideClusterVersion(lg *zap.Logger, vers map[string]*version.Versions) *se
 // cluster version in the range of [MinClusterVersion, Version] and no known members has a cluster version
 // out of the range.
 // We set this rule since when the local member joins, another member might be offline.
-func isCompatibleWithCluster(lg *zap.Logger, cl *membership.RaftCluster, local types.ID, rt http.RoundTripper) bool {
+func isCompatibleWithCluster(lg *zap.Logger, cl *membership.RaftCluster, local types.ID, rt http.RoundTripper, allowDowngrade bool) bool {
 	vers := getVersions(lg, cl, local, rt)
 	minV := semver.Must(semver.NewVersion(version.MinClusterVersion))
 	maxV := semver.Must(semver.NewVersion(version.Version))
@@ -238,10 +238,10 @@ func isCompatibleWithCluster(lg *zap.Logger, cl *membership.RaftCluster, local t
 		Major: maxV.Major,
 		Minor: maxV.Minor,
 	}
-	return isCompatibleWithVers(lg, vers, local, minV, maxV)
+	return isCompatibleWithVers(lg, vers, local, minV, maxV, allowDowngrade)
 }
 
-func isCompatibleWithVers(lg *zap.Logger, vers map[string]*version.Versions, local types.ID, minV, maxV *semver.Version) bool {
+func isCompatibleWithVers(lg *zap.Logger, vers map[string]*version.Versions, local types.ID, minV, maxV *semver.Version, allowDowngrade bool) bool {
 	var ok bool
 	for id, v := range vers {
 		// ignore comparison with local version
@@ -279,17 +279,19 @@ func isCompatibleWithVers(lg *zap.Logger, vers map[string]*version.Versions, loc
 			return false
 		}
 		if maxV.LessThan(*clusterv) {
-			if lg != nil {
-				lg.Warn(
-					"cluster version of remote member is not compatible; too high",
-					zap.String("remote-member-id", id),
-					zap.String("remote-member-cluster-version", clusterv.String()),
-					zap.String("minimum-cluster-version-supported", minV.String()),
-				)
-			} else {
-				plog.Warningf("the running cluster version(%v) is higher than the maximum cluster version(%v) supported", clusterv.String(), maxV.String())
+			if !allowDowngrade || maxV.Major < clusterv.Major || maxV.Minor < clusterv.Minor-1 {
+				if lg != nil {
+					lg.Warn(
+						"cluster version of remote member is not compatible; too high",
+						zap.String("remote-member-id", id),
+						zap.String("remote-member-cluster-version", clusterv.String()),
+						zap.String("minimum-cluster-version-supported", minV.String()),
+					)
+				} else {
+					plog.Warningf("the running cluster version(%v) is higher than the maximum cluster version(%v) supported", clusterv.String(), maxV.String())
+				}
+				return false
 			}
-			return false
 		}
 		ok = true
 	}

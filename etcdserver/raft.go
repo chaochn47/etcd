@@ -544,6 +544,9 @@ func restartNode(cfg ServerConfig, snapshot *raftpb.Snapshot) (types.ID, *member
 	}
 	cl := membership.NewCluster(cfg.Logger, "")
 	cl.SetID(id, cid)
+	if cfg.UnsafeAllowClusterVersionDowngrade {
+		cl.AllowDowngrade()
+	}
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)
@@ -641,6 +644,9 @@ func restartAsStandaloneNode(cfg ServerConfig, snapshot *raftpb.Snapshot) (types
 
 	cl := membership.NewCluster(cfg.Logger, "")
 	cl.SetID(id, cid)
+	if cfg.UnsafeAllowClusterVersionDowngrade {
+		cl.AllowDowngrade()
+	}
 	s := raft.NewMemoryStorage()
 	if snapshot != nil {
 		s.ApplySnapshot(*snapshot)

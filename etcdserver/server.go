@@ -360,7 +360,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		if err = membership.ValidateClusterAndAssignIDs(cfg.Logger, cl, existingCluster); err != nil {
 			return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
 		}
-		if !isCompatibleWithCluster(cfg.Logger, cl, cl.MemberByName(cfg.Name).ID, prt) {
+		if !isCompatibleWithCluster(cfg.Logger, cl, cl.MemberByName(cfg.Name).ID, prt, cfg.UnsafeAllowClusterVersionDowngrade) {
 			return nil, fmt.Errorf("incompatible with current running cluster")
 		}
 
@@ -368,6 +368,9 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetID(types.ID(0), existingCluster.ID())
 		cl.SetStore(st)
 		cl.SetBackend(be)
+		if cfg.UnsafeAllowClusterVersionDowngrade {
+			cl.AllowDowngrade()
+		}
 		id, n, s, w = startNode(cfg, cl, nil)
 		cl.SetID(id, existingCluster.ID())
 
@@ -403,6 +406,9 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 		cl.SetStore(st)
 		cl.SetBackend(be)
+		if cfg.UnsafeAllowClusterVersionDowngrade {
+			cl.AllowDowngrade()
+		}
 		id, n, s, w = startNode(cfg, cl, cl.MemberIDs())
 		cl.SetID(id, cl.ID())
 

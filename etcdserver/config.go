@@ -166,6 +166,9 @@ type ServerConfig struct {
 	// UnsafeNoFsync disables all uses of fsync.
 	// Setting this is unsafe and will cause data loss.
 	UnsafeNoFsync bool `json:"unsafe-no-fsync"`
+
+	// UnsafeAllowClusterVersionDowngrade enables only one single minor cluster version downgrade at a time automatically.
+	UnsafeAllowClusterVersionDowngrade bool `json:"unsafe-allow-cluster-version-downgrade"`
 }
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
