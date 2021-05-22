@@ -53,6 +53,9 @@ type RaftCluster struct {
 	v2store v2store.Store
 	be      backend.Backend
 
+	// Readonly field after initialization
+	unsafeAllowDowngrade bool
+
 	sync.Mutex // guards the fields below
 	version    *semver.Version
 	members    map[types.ID]*Member
@@ -248,7 +251,7 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 
 	c.members, c.removed = membersFromStore(c.lg, c.v2store)
 	c.version = clusterVersionFromStore(c.lg, c.v2store)
-	mustDetectDowngrade(c.lg, c.version)
+	mustDetectDowngrade(c.lg, c.version, c.unsafeAllowDowngrade)
 	onSet(c.lg, c.version)
 
 	for _, m := range c.members {
@@ -567,7 +570,7 @@ func (c *RaftCluster) SetVersion(ver *semver.Version, onSet func(*zap.Logger, *s
 	}
 	oldVer := c.version
 	c.version = ver
-	mustDetectDowngrade(c.lg, c.version)
+	mustDetectDowngrade(c.lg, c.version, c.unsafeAllowDowngrade)
 	if c.v2store != nil {
 		mustSaveClusterVersionToStore(c.v2store, ver)
 	}
@@ -579,6 +582,10 @@ func (c *RaftCluster) SetVersion(ver *semver.Version, onSet func(*zap.Logger, *s
 	}
 	ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(ver.String())}).Set(1)
 	onSet(c.lg, ver)
+}
+
+func (c *RaftCluster) AllowUnsafeDowngrade() {
+	c.unsafeAllowDowngrade = true
 }
 
 func (c *RaftCluster) IsReadyToAddVotingMember() bool {
@@ -786,19 +793,37 @@ func ValidateClusterAndAssignIDs(lg *zap.Logger, local *RaftCluster, existing *R
 	return nil
 }
 
-func mustDetectDowngrade(lg *zap.Logger, cv *semver.Version) {
+func mustDetectDowngrade(lg *zap.Logger, cv *semver.Version, unsafeAllowDowngrade bool) {
 	lv := semver.Must(semver.NewVersion(version.Version))
 	// only keep major.minor version for comparison against cluster version
 	lv = &semver.Version{Major: lv.Major, Minor: lv.Minor}
 	if cv != nil && lv.LessThan(*cv) {
-		if lg != nil {
-			lg.Fatal(
-				"invalid downgrade; server version is lower than determined cluster version",
-				zap.String("current-server-version", version.Version),
-				zap.String("determined-cluster-version", version.Cluster(cv.String())),
-			)
+		// if downgrade is enabled, and it's one minor version down
+		// safe to not fail (e.g., local version 3.4, cluster version 3.5)
+		if unsafeAllowDowngrade && isValidDowngrade(cv, lv) {
+			if lg != nil {
+				lg.Warn(
+					"allowing unsafe downgrade; local server version is lower than determined cluster version",
+					zap.String("current-server-version", version.Version),
+					zap.String("determined-cluster-version", version.Cluster(cv.String())),
+					zap.String("target-cluster-version", version.Cluster(lv.String())),
+				)
+			} else {
+				plog.Warningf("allowing unsafe downgrade; local server version %s is lower than determined cluster version %s; "+
+					"target downgrading to cluster version %s", version.Version, version.Cluster(cv.String()), version.Cluster(lv.String()))
+			}
+			// overwrite the cluster version with local version determined by the etcd binary version
+			*cv = *lv
 		} else {
-			plog.Fatalf("cluster cannot be downgraded (current version: %s is lower than determined cluster version: %s).", version.Version, version.Cluster(cv.String()))
+			if lg != nil {
+				lg.Fatal(
+					"invalid downgrade; server version is lower than determined cluster version",
+					zap.String("current-server-version", version.Version),
+					zap.String("determined-cluster-version", version.Cluster(cv.String())),
+				)
+			} else {
+				plog.Fatalf("cluster cannot be downgraded (current version: %s is lower than determined cluster version: %s).", version.Version, version.Cluster(cv.String()))
+			}
 		}
 	}
 }
@@ -842,4 +867,14 @@ func (c *RaftCluster) VotingMemberIDs() []types.ID {
 	}
 	sort.Sort(types.IDSlice(ids))
 	return ids
+}
+
+// isValidDowngrade verifies whether the cluster can be downgraded from verFrom to verTo
+func isValidDowngrade(verFrom *semver.Version, verTo *semver.Version) bool {
+	return verTo.Equal(*allowedDowngradeVersion(verFrom))
+}
+
+func allowedDowngradeVersion(ver *semver.Version) *semver.Version {
+	// Todo: handle the case that downgrading from higher major version(e.g. downgrade from v4.0 to v3.x)
+	return &semver.Version{Major: ver.Major, Minor: ver.Minor - 1}
 }

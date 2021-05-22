@@ -224,20 +224,30 @@ func decideClusterVersion(lg *zap.Logger, vers map[string]*version.Versions) *se
 	return cv
 }
 
+// if the unsafeDowngrade enabled status is true, the version window is [MinClusterVersion, oneMinorHigherThanLocalVersion]
+// otherwise, the version window is [MinClusterVersion, localVersion]
+func allowedVersionRange(unsafeDowngradeEnabled bool) (minV *semver.Version, maxV *semver.Version) {
+	minV = semver.Must(semver.NewVersion(version.MinClusterVersion))
+	maxV = semver.Must(semver.NewVersion(version.Version))
+	maxV = &semver.Version{Major: maxV.Major, Minor: maxV.Minor}
+
+	// if unsafeDowngrade is enabled, allow one minor version down
+	if unsafeDowngradeEnabled {
+		maxV.Minor = maxV.Minor + 1
+	}
+
+	return minV, maxV
+}
+
 // isCompatibleWithCluster return true if the local member has a compatible version with
 // the current running cluster.
 // The version is considered as compatible when at least one of the other members in the cluster has a
 // cluster version in the range of [MinClusterVersion, Version] and no known members has a cluster version
 // out of the range.
 // We set this rule since when the local member joins, another member might be offline.
-func isCompatibleWithCluster(lg *zap.Logger, cl *membership.RaftCluster, local types.ID, rt http.RoundTripper) bool {
+func isCompatibleWithCluster(lg *zap.Logger, cl *membership.RaftCluster, local types.ID, rt http.RoundTripper, unsafeDowngradeEnabled bool) bool {
 	vers := getVersions(lg, cl, local, rt)
-	minV := semver.Must(semver.NewVersion(version.MinClusterVersion))
-	maxV := semver.Must(semver.NewVersion(version.Version))
-	maxV = &semver.Version{
-		Major: maxV.Major,
-		Minor: maxV.Minor,
-	}
+	minV, maxV := allowedVersionRange(unsafeDowngradeEnabled)
 	return isCompatibleWithVers(lg, vers, local, minV, maxV)
 }
 

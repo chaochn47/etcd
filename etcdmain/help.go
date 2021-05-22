@@ -220,6 +220,9 @@ Experimental feature:
 Unsafe feature:
   --force-new-cluster 'false'
     Force to create a new one-member cluster.
+  --unsafe-allow-cluster-version-downgrade 'false'
+    Allow cluster version downgrade, unsafe, newer minor versions may introduce incompatible feature changes.
+    For instance, experimental lease checkpointer is enabled in 3.4 and downgrade to 3.3 will fail. 
 
 CAUTIOUS with unsafe flag! It may break the guarantees given by the consensus protocol!
 

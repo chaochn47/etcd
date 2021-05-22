@@ -172,6 +172,11 @@ type ServerConfig struct {
 	// UnsafeNoFsync disables all uses of fsync.
 	// Setting this is unsafe and will cause data loss.
 	UnsafeNoFsync bool `json:"unsafe-no-fsync"`
+	// UnsafeAllowClusterVersionDowngrade is "true" to allow cluster version downgrade.
+	// "false" by default, since newer minor versions may introduce incompatible feature changes.
+	// For instance, lease checkpointer request to 3.4 will fail the remaining 3.3 nodes.
+	// But, if one does not use "lease checkpointer" feature, it can be safe to run 3.3 along with 3.4.
+	UnsafeAllowClusterVersionDowngrade bool `json:"unsafe-allow-cluster-version-downgrade"`
 }
 
 // VerifyBootstrap sanity-checks the initial config for bootstrap case
