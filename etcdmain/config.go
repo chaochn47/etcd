@@ -221,6 +221,9 @@ func newConfig() *config {
 	fs.BoolVar(&cfg.ec.ExperimentalInitialCorruptCheck, "experimental-initial-corrupt-check", cfg.ec.ExperimentalInitialCorruptCheck, "Enable to check data corruption before serving any client/peer traffic.")
 	fs.DurationVar(&cfg.ec.ExperimentalCorruptCheckTime, "experimental-corrupt-check-time", cfg.ec.ExperimentalCorruptCheckTime, "Duration of time between cluster corruption check passes.")
 
+	// unsafe
+	fs.BoolVar(&cfg.ec.UnsafeAllowClusterVersionDowngrade, "unsafe-allow-cluster-version-downgrade", embed.DefaultUnsafeAllowClusterVersionDowngrade, "true to allow cluster version downgrade, because newer minor versions may introduce incompatible feature changes like lease checkpointer introduced in v3.4")
+
 	// ignored
 	for _, f := range cfg.ignored {
 		fs.Var(&flags.IgnoredFlag{Name: f}, f, "")

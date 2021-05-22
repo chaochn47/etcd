@@ -47,6 +47,9 @@ type RaftCluster struct {
 	store store.Store
 	be    backend.Backend
 
+	// Readonly field after initialization
+	unsafeAllowDowngrade bool
+
 	sync.Mutex // guards the fields below
 	version    *semver.Version
 	members    map[types.ID]*Member
@@ -210,7 +213,7 @@ func (c *RaftCluster) Recover(onSet func(*semver.Version)) {
 
 	c.members, c.removed = membersFromStore(c.store)
 	c.version = clusterVersionFromStore(c.store)
-	mustDetectDowngrade(c.version)
+	mustDetectDowngrade(c.version, c.unsafeAllowDowngrade)
 	onSet(c.version)
 
 	for _, m := range c.members {
@@ -371,7 +374,7 @@ func (c *RaftCluster) SetVersion(ver *semver.Version, onSet func(*semver.Version
 	}
 	oldVer := c.version
 	c.version = ver
-	mustDetectDowngrade(c.version)
+	mustDetectDowngrade(c.version, c.unsafeAllowDowngrade)
 	if c.store != nil {
 		mustSaveClusterVersionToStore(c.store, ver)
 	}
@@ -383,6 +386,10 @@ func (c *RaftCluster) SetVersion(ver *semver.Version, onSet func(*semver.Version
 	}
 	ClusterVersionMetrics.With(prometheus.Labels{"cluster_version": version.Cluster(ver.String())}).Set(1)
 	onSet(ver)
+}
+
+func (c *RaftCluster) AllowUnsafeDowngrade() {
+	c.unsafeAllowDowngrade = true
 }
 
 func (c *RaftCluster) IsReadyToAddNewMember() bool {
@@ -508,11 +515,30 @@ func ValidateClusterAndAssignIDs(local *RaftCluster, existing *RaftCluster) erro
 	return nil
 }
 
-func mustDetectDowngrade(cv *semver.Version) {
+func mustDetectDowngrade(cv *semver.Version, unsafeAllowDowngrade bool) {
 	lv := semver.Must(semver.NewVersion(version.Version))
 	// only keep major.minor version for comparison against cluster version
 	lv = &semver.Version{Major: lv.Major, Minor: lv.Minor}
 	if cv != nil && lv.LessThan(*cv) {
-		plog.Fatalf("cluster cannot be downgraded (current version: %s is lower than determined cluster version: %s).", version.Version, version.Cluster(cv.String()))
+		// if downgrade is enabled, and it's one minor version down
+		// safe to not fail (e.g., local version 3.4, cluster version 3.5)
+		if unsafeAllowDowngrade && isValidDowngrade(cv, lv) {
+			plog.Warnf("allowing unsafe downgrade; local server version %s is lower than determined cluster version %s; " +
+				"target downgrading to cluster version %s", version.Version, version.Cluster(cv.String()), version.Cluster(lv.String()))
+			// overwrite the cluster version with local version determined by the etcd binary version
+			*cv = *lv
+		} else {
+			plog.Fatalf("cluster cannot be downgraded (current version: %s is lower than determined cluster version: %s).", version.Version, version.Cluster(cv.String()))
+		}
 	}
+}
+
+// isValidDowngrade verifies whether the cluster can be downgraded from verFrom to verTo
+func isValidDowngrade(verFrom *semver.Version, verTo *semver.Version) bool {
+	return verTo.Equal(*allowedDowngradeVersion(verFrom))
+}
+
+func allowedDowngradeVersion(ver *semver.Version) *semver.Version {
+	// Todo: handle the case that downgrading from higher major version(e.g. downgrade from v4.0 to v3.x)
+	return &semver.Version{Major: ver.Major, Minor: ver.Minor - 1}
 }

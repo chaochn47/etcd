@@ -181,6 +181,9 @@ given by the consensus protocol.
 
 	--force-new-cluster 'false'
 		force to create a new one-member cluster.
+	--unsafe-allow-cluster-version-downgrade 'false'
+		Allow cluster version downgrade, unsafe, newer minor versions may introduce incompatible feature changes.
+		For instance, experimental lease checkpointer is enabled in 3.4 and downgrade to 3.3 will fail. 
 
 profiling flags:
 	--enable-pprof 'false'

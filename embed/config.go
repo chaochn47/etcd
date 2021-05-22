@@ -67,6 +67,10 @@ const (
 	// TODO: disable v2 when deprecated.
 	DefaultEnableV2 = true
 
+	// DefaultUnsafeAllowClusterVersionDowngrade is the default value for "unsafe-allow-cluster-version-downgrade" flag.
+	// unsafe allow cluster version downgrade is disabled by default
+	DefaultUnsafeAllowClusterVersionDowngrade = false
+
 	// maxElectionMs specifies the maximum value of election timeout.
 	// More details are listed in ../Documentation/tuning.md#time-parameters.
 	maxElectionMs = 50000
@@ -228,6 +232,12 @@ type Config struct {
 	ExperimentalInitialCorruptCheck bool          `json:"experimental-initial-corrupt-check"`
 	ExperimentalCorruptCheckTime    time.Duration `json:"experimental-corrupt-check-time"`
 	ExperimentalEnableV2V3          string        `json:"experimental-enable-v2v3"`
+
+	// UnsafeAllowClusterVersionDowngrade is "true" to allow cluster version downgrade.
+	// "false" by default, since newer minor versions may introduce incompatible feature changes.
+	// For instance, lease checkpointer request to 3.4 will fail the remaining 3.3 nodes.
+	// But, if one does not use "lease checkpointer" feature, it can be safe to run 3.3 along with 3.4.
+	UnsafeAllowClusterVersionDowngrade bool `json:"unsafe-allow-cluster-version-downgrade"`
 }
 
 // configYAML holds the config suitable for yaml parsing
@@ -263,31 +273,32 @@ func NewConfig() *Config {
 	lcurl, _ := url.Parse(DefaultListenClientURLs)
 	acurl, _ := url.Parse(DefaultAdvertiseClientURLs)
 	cfg := &Config{
-		CorsInfo:                   &cors.CORSInfo{},
-		MaxSnapFiles:               DefaultMaxSnapshots,
-		MaxWalFiles:                DefaultMaxWALs,
-		Name:                       DefaultName,
-		SnapCount:                  etcdserver.DefaultSnapCount,
-		MaxTxnOps:                  DefaultMaxTxnOps,
-		MaxRequestBytes:            DefaultMaxRequestBytes,
-		GRPCKeepAliveMinTime:       DefaultGRPCKeepAliveMinTime,
-		GRPCKeepAliveInterval:      DefaultGRPCKeepAliveInterval,
-		GRPCKeepAliveTimeout:       DefaultGRPCKeepAliveTimeout,
-		TickMs:                     100,
-		ElectionMs:                 1000,
-		InitialElectionTickAdvance: true,
-		LPUrls:                     []url.URL{*lpurl},
-		LCUrls:                     []url.URL{*lcurl},
-		APUrls:                     []url.URL{*apurl},
-		ACUrls:                     []url.URL{*acurl},
-		ClusterState:               ClusterStateFlagNew,
-		InitialClusterToken:        "etcd-cluster",
-		StrictReconfigCheck:        DefaultStrictReconfigCheck,
-		LogOutput:                  DefaultLogOutput,
-		Metrics:                    "basic",
-		EnableV2:                   DefaultEnableV2,
-		AuthToken:                  "simple",
-		AuthTokenTTL: 300,
+		CorsInfo:                           &cors.CORSInfo{},
+		MaxSnapFiles:                       DefaultMaxSnapshots,
+		MaxWalFiles:                        DefaultMaxWALs,
+		Name:                               DefaultName,
+		SnapCount:                          etcdserver.DefaultSnapCount,
+		MaxTxnOps:                          DefaultMaxTxnOps,
+		MaxRequestBytes:                    DefaultMaxRequestBytes,
+		GRPCKeepAliveMinTime:               DefaultGRPCKeepAliveMinTime,
+		GRPCKeepAliveInterval:              DefaultGRPCKeepAliveInterval,
+		GRPCKeepAliveTimeout:               DefaultGRPCKeepAliveTimeout,
+		TickMs:                             100,
+		ElectionMs:                         1000,
+		InitialElectionTickAdvance:         true,
+		LPUrls:                             []url.URL{*lpurl},
+		LCUrls:                             []url.URL{*lcurl},
+		APUrls:                             []url.URL{*apurl},
+		ACUrls:                             []url.URL{*acurl},
+		ClusterState:                       ClusterStateFlagNew,
+		InitialClusterToken:                "etcd-cluster",
+		StrictReconfigCheck:                DefaultStrictReconfigCheck,
+		LogOutput:                          DefaultLogOutput,
+		Metrics:                            "basic",
+		EnableV2:                           DefaultEnableV2,
+		AuthToken:                          "simple",
+		AuthTokenTTL:                       300,
+		UnsafeAllowClusterVersionDowngrade: DefaultUnsafeAllowClusterVersionDowngrade,
 	}
 	cfg.InitialCluster = cfg.InitialClusterFromName(cfg.Name)
 	return cfg

@@ -319,7 +319,7 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		if err = membership.ValidateClusterAndAssignIDs(cl, existingCluster); err != nil {
 			return nil, fmt.Errorf("error validating peerURLs %s: %v", existingCluster, err)
 		}
-		if !isCompatibleWithCluster(cl, cl.MemberByName(cfg.Name).ID, prt) {
+		if !isCompatibleWithCluster(cl, cl.MemberByName(cfg.Name).ID, prt, cfg.UnsafeAllowClusterVersionDowngrade) {
 			return nil, fmt.Errorf("incompatible with current running cluster")
 		}
 
@@ -327,6 +327,9 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		cl.SetID(existingCluster.ID())
 		cl.SetStore(st)
 		cl.SetBackend(be)
+		if cfg.UnsafeAllowClusterVersionDowngrade {
+			cl.AllowUnsafeDowngrade()
+		}
 		cfg.Print()
 		id, n, s, w = startNode(cfg, cl, nil)
 	case !haveWAL && cfg.NewCluster:
@@ -404,6 +407,9 @@ func NewServer(cfg ServerConfig) (srv *EtcdServer, err error) {
 		}
 		cl.SetStore(st)
 		cl.SetBackend(be)
+		if cfg.UnsafeAllowClusterVersionDowngrade {
+			cl.AllowUnsafeDowngrade()
+		}
 		cl.Recover(api.UpdateCapability)
 		if cl.Version() != nil && !cl.Version().LessThan(semver.Version{Major: 3}) && !beExist {
 			os.RemoveAll(bepath)
