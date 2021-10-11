@@ -24,6 +24,7 @@ const (
 	tPut
 	tDeleteRange
 	tTxn
+	tRangeStream
 )
 
 var noPrefixEnd = []byte{0}
@@ -112,6 +113,8 @@ func (op Op) IsPut() bool { return op.t == tPut }
 // IsGet returns true iff the operation is a Get.
 func (op Op) IsGet() bool { return op.t == tRange }
 
+func (op Op) IsGetStream() bool { return op.t == tRangeStream }
+
 // IsDelete returns true iff the operation is a Delete.
 func (op Op) IsDelete() bool { return op.t == tDeleteRange }
 
@@ -169,6 +172,21 @@ func (op Op) toRangeRequest() *pb.RangeRequest {
 	return r
 }
 
+func (op Op) toRangeStreamRequest() *pb.RangeRequest {
+	if op.t != tRangeStream {
+		panic("op.t != tRangeStream")
+	}
+	r := &pb.RangeRequest{
+		Key:          op.key,
+		RangeEnd:     op.end,
+		Limit:        op.limit,
+		Revision:     op.rev,
+		Serializable: op.serializable,
+		KeysOnly:     op.keysOnly,
+	}
+	return r
+}
+
 func (op Op) toTxnRequest() *pb.TxnRequest {
 	thenOps := make([]*pb.RequestOp, len(op.thenOps))
 	for i, tOp := range op.thenOps {
@@ -189,6 +207,8 @@ func (op Op) toRequestOp() *pb.RequestOp {
 	switch op.t {
 	case tRange:
 		return &pb.RequestOp{Request: &pb.RequestOp_RequestRange{RequestRange: op.toRangeRequest()}}
+	case tRangeStream:
+		return &pb.RequestOp{Request: &pb.RequestOp_RequestRange{RequestRange: op.toRangeStreamRequest()}}
 	case tPut:
 		r := &pb.PutRequest{Key: op.key, Value: op.val, Lease: int64(op.leaseID), PrevKv: op.prevKV, IgnoreValue: op.ignoreValue, IgnoreLease: op.ignoreLease}
 		return &pb.RequestOp{Request: &pb.RequestOp_RequestPut{RequestPut: r}}
@@ -216,7 +236,7 @@ func (op Op) isWrite() bool {
 		}
 		return false
 	}
-	return op.t != tRange
+	return op.t != tRange && op.t != tRangeStream
 }
 
 func NewOp() *Op {
@@ -230,6 +250,16 @@ func OpGet(key string, opts ...OpOption) Op {
 		panic("`WithPrefix` and `WithFromKey` cannot be set at the same time, choose one")
 	}
 	ret := Op{t: tRange, key: []byte(key)}
+	ret.applyOpts(opts)
+	return ret
+}
+
+func OpGetStream(key string, opts ...OpOption) Op {
+	// WithPrefix and WithFromKey are not supported together
+	if IsOptsWithPrefix(opts) && IsOptsWithFromKey(opts) {
+		panic("`WithPrefix` and `WithFromKey` cannot be set at the same time, choose one")
+	}
+	ret := Op{t: tRangeStream, key: []byte(key)}
 	ret.applyOpts(opts)
 	return ret
 }

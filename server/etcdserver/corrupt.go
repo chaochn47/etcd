@@ -317,6 +317,10 @@ func (a *applierV3Corrupt) Range(ctx context.Context, txn mvcc.TxnRead, p *pb.Ra
 	return nil, ErrCorrupt
 }
 
+func (a *applierV3Corrupt) RangeStream(ctx context.Context, txn mvcc.TxnRead, r *pb.RangeRequest, rspC chan *pb.RangeResponse, errC chan error) (*pb.RangeResponse, error) {
+	return nil, ErrCorrupt
+}
+
 func (a *applierV3Corrupt) DeleteRange(txn mvcc.TxnWrite, p *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
 	return nil, ErrCorrupt
 }

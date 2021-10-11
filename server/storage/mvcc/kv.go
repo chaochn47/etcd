@@ -33,6 +33,7 @@ type RangeResult struct {
 	KVs   []mvccpb.KeyValue
 	Rev   int64
 	Count int
+	Err   error
 }
 
 type ReadView interface {
@@ -53,6 +54,8 @@ type ReadView interface {
 	// Limit limits the number of keys returned.
 	// If the required rev is compacted, ErrCompacted will be returned.
 	Range(ctx context.Context, key, end []byte, ro RangeOptions) (r *RangeResult, err error)
+
+	RangeStream(key, end []byte, ro RangeOptions, streamC chan *RangeResult) (err error)
 }
 
 // TxnRead represents a read-only transaction with operations that will not

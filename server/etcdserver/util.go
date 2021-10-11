@@ -161,6 +161,17 @@ func warnOfExpensiveReadOnlyRangeRequest(lg *zap.Logger, warningApplyDuration ti
 	warnOfExpensiveGenericRequest(lg, warningApplyDuration, now, reqStringer, "read-only range ", resp, err)
 }
 
+func warnOfExpensiveReadOnlyRangeStreamRequest(lg *zap.Logger, warningApplyDuration time.Duration, now time.Time, reqStringer fmt.Stringer, rangeResponse *pb.RangeResponse, err error) {
+	if time.Since(now) <= warningApplyDuration {
+		return
+	}
+	var resp string
+	if !isNil(rangeResponse) {
+		resp = fmt.Sprintf("range_stream_response_total_count:%d, size:%d", rangeResponse.GetCount(), rangeResponse.GetTotalSize())
+	}
+	warnOfExpensiveGenericRequest(lg, warningApplyDuration, now, reqStringer, "read-only rangeStream ", resp, err)
+}
+
 // callers need make sure time has passed warningApplyDuration
 func warnOfExpensiveGenericRequest(lg *zap.Logger, warningApplyDuration time.Duration, now time.Time, reqStringer fmt.Stringer, prefix string, resp string, err error) {
 	lg.Warn(

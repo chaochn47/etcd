@@ -48,6 +48,7 @@ const (
 
 type RaftKV interface {
 	Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeResponse, error)
+	RangeStream(ctx context.Context, r *pb.RangeRequest, rspC chan *pb.RangeResponse, errC chan error) error
 	Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error)
 	DeleteRange(ctx context.Context, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error)
 	Txn(ctx context.Context, r *pb.TxnRequest) (*pb.TxnResponse, error)
@@ -129,6 +130,48 @@ func (s *EtcdServer) Range(ctx context.Context, r *pb.RangeRequest) (*pb.RangeRe
 		return nil, err
 	}
 	return resp, err
+}
+
+func (s *EtcdServer) RangeStream(ctx context.Context, r *pb.RangeRequest, rspC chan *pb.RangeResponse, errC chan error) error {
+	trace := traceutil.New("rangeStream",
+		s.lg,
+		traceutil.Field{Key: "range_begin", Value: string(r.Key)},
+		traceutil.Field{Key: "range_end", Value: string(r.RangeEnd)},
+	)
+	ctx = context.WithValue(ctx, traceutil.TraceKey, trace)
+
+	var resp *pb.RangeResponse
+	var err error
+
+	defer func(start time.Time) {
+		warnOfExpensiveReadOnlyRangeStreamRequest(s.lg, s.Cfg.WarningApplyDuration, start, r, resp, err)
+		if resp != nil {
+			trace.AddField(
+				traceutil.Field{Key: "response_total_count", Value: resp.GetCount()},
+				traceutil.Field{Key: "response_revision", Value: resp.Header.Revision},
+			)
+		}
+		trace.LogIfLong(traceThreshold)
+	}(time.Now())
+
+	if !r.Serializable {
+		err = s.linearizableReadNotify(ctx)
+		trace.Step("agreement among raft nodes before linearized reading")
+		if err != nil {
+			return err
+		}
+	}
+
+	chk := func(ai *auth.AuthInfo) error {
+		return s.authStore.IsRangePermitted(ai, r.Key, r.RangeEnd)
+	}
+
+	get := func() { resp, err = s.applyV3Base.RangeStream(ctx, nil, r, rspC, errC) }
+	if serr := s.doSerialize(ctx, chk, get); serr != nil {
+		err = serr
+		return err
+	}
+	return err
 }
 
 func (s *EtcdServer) Put(ctx context.Context, r *pb.PutRequest) (*pb.PutResponse, error) {

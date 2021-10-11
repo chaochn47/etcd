@@ -16,6 +16,9 @@ package clientv3
 
 import (
 	"context"
+	v3rpc "go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
+	"io"
+	"time"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 
@@ -23,11 +26,12 @@ import (
 )
 
 type (
-	CompactResponse pb.CompactionResponse
-	PutResponse     pb.PutResponse
-	GetResponse     pb.RangeResponse
-	DeleteResponse  pb.DeleteRangeResponse
-	TxnResponse     pb.TxnResponse
+	CompactResponse   pb.CompactionResponse
+	PutResponse       pb.PutResponse
+	GetResponse       pb.RangeResponse
+	GetStreamResponse pb.RangeResponse
+	DeleteResponse    pb.DeleteRangeResponse
+	TxnResponse       pb.TxnResponse
 )
 
 type KV interface {
@@ -47,6 +51,8 @@ type KV interface {
 	// When passed WithSort(), the keys will be sorted.
 	Get(ctx context.Context, key string, opts ...OpOption) (*GetResponse, error)
 
+	GetStream(ctx context.Context, key string, opts ...OpOption) (*GetStreamResponse, error)
+
 	// Delete deletes a key, or optionally using WithRange(end), [key, end).
 	Delete(ctx context.Context, key string, opts ...OpOption) (*DeleteResponse, error)
 
@@ -65,22 +71,27 @@ type KV interface {
 }
 
 type OpResponse struct {
-	put *PutResponse
-	get *GetResponse
-	del *DeleteResponse
-	txn *TxnResponse
+	put       *PutResponse
+	get       *GetResponse
+	getStream *GetStreamResponse
+	del       *DeleteResponse
+	txn       *TxnResponse
 }
 
-func (op OpResponse) Put() *PutResponse    { return op.put }
-func (op OpResponse) Get() *GetResponse    { return op.get }
-func (op OpResponse) Del() *DeleteResponse { return op.del }
-func (op OpResponse) Txn() *TxnResponse    { return op.txn }
+func (op OpResponse) Put() *PutResponse             { return op.put }
+func (op OpResponse) Get() *GetResponse             { return op.get }
+func (op OpResponse) GetStream() *GetStreamResponse { return op.getStream }
+func (op OpResponse) Del() *DeleteResponse          { return op.del }
+func (op OpResponse) Txn() *TxnResponse             { return op.txn }
 
 func (resp *PutResponse) OpResponse() OpResponse {
 	return OpResponse{put: resp}
 }
 func (resp *GetResponse) OpResponse() OpResponse {
 	return OpResponse{get: resp}
+}
+func (resp *GetStreamResponse) OpResponse() OpResponse {
+	return OpResponse{getStream: resp}
 }
 func (resp *DeleteResponse) OpResponse() OpResponse {
 	return OpResponse{del: resp}
@@ -120,6 +131,11 @@ func (kv *kv) Get(ctx context.Context, key string, opts ...OpOption) (*GetRespon
 	return r.get, toErr(ctx, err)
 }
 
+func (kv *kv) GetStream(ctx context.Context, key string, opts ...OpOption) (*GetStreamResponse, error) {
+	r, err := kv.Do(ctx, OpGetStream(key, opts...))
+	return r.getStream, toErr(ctx, err)
+}
+
 func (kv *kv) Delete(ctx context.Context, key string, opts ...OpOption) (*DeleteResponse, error) {
 	r, err := kv.Do(ctx, OpDelete(key, opts...))
 	return r.del, toErr(ctx, err)
@@ -150,6 +166,14 @@ func (kv *kv) Do(ctx context.Context, op Op) (OpResponse, error) {
 		if err == nil {
 			return OpResponse{get: (*GetResponse)(resp)}, nil
 		}
+	case tRangeStream:
+		var rangeStreamClient pb.KV_RangeStreamClient
+		var resp *pb.RangeResponse
+		rangeStreamClient, err = kv.openRangeStreamClient(ctx, op.toRangeStreamRequest(), kv.callOpts...)
+		resp, err = kv.serveRangeStream(ctx, rangeStreamClient)
+		if err == nil {
+			return OpResponse{getStream: (*GetStreamResponse)(resp)}, nil
+		}
 	case tPut:
 		var resp *pb.PutResponse
 		r := &pb.PutRequest{Key: op.key, Value: op.val, Lease: int64(op.leaseID), PrevKv: op.prevKV, IgnoreValue: op.ignoreValue, IgnoreLease: op.ignoreLease}
@@ -174,4 +198,103 @@ func (kv *kv) Do(ctx context.Context, op Op) (OpResponse, error) {
 		panic("Unknown op")
 	}
 	return OpResponse{}, toErr(ctx, err)
+}
+
+// openRangeStreamClient retries opening a rangeStream client until success or halt.
+// manually retry in case "rsc==nil && err==nil"
+// TODO: remove FailFast=false
+func (kv *kv) openRangeStreamClient(ctx context.Context, in *pb.RangeRequest, opts ...grpc.CallOption) (rsc pb.KV_RangeStreamClient, err error) {
+	backoff := time.Millisecond
+	for {
+		select {
+		case <-ctx.Done():
+			if err == nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		default:
+		}
+		if rsc, err = kv.remote.RangeStream(ctx, in, opts...); rsc != nil && err == nil {
+			break
+		}
+		if isHaltErr(ctx, err) {
+			return nil, v3rpc.Error(err)
+		}
+		if isUnavailableErr(ctx, err) {
+			// retry, but backoff
+			if backoff < maxBackoff {
+				// 25% backoff factor
+				backoff = backoff + backoff/4
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			time.Sleep(backoff)
+		}
+	}
+	return rsc, nil
+}
+
+func (kv *kv) serveRangeStream(ctx context.Context, rsc pb.KV_RangeStreamClient) (*pb.RangeResponse, error) {
+	rspC := make(chan *pb.RangeResponse)
+	errC := make(chan error)
+
+	mainRSP := &pb.RangeResponse{}
+	mainRSP.Header = &pb.ResponseHeader{}
+
+	go kv.handleRangeStream(ctx, rsc, rspC, errC)
+
+Loop:
+	for {
+		select {
+		case subRsp := <-rspC:
+			if subRsp == nil {
+				break Loop
+			}
+
+			mainRSP.Kvs = append(mainRSP.Kvs, subRsp.Kvs...)
+			mainRSP.Count = subRsp.Count
+			mainRSP.Header = subRsp.Header
+		case err := <-errC:
+			return nil, err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return mainRSP, nil
+}
+
+func (kv *kv) handleRangeStream(ctx context.Context, rsc pb.KV_RangeStreamClient, rspC chan *pb.RangeResponse, errC chan error) {
+	defer func() {
+		close(rspC)
+		close(errC)
+	}()
+
+	for {
+		resp, err := rsc.Recv()
+		if err != nil {
+			if err == io.EOF {
+				select {
+				case rspC <- nil:
+				case <-ctx.Done():
+					return
+				}
+				break
+			}
+
+			select {
+			case errC <- err:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		select {
+		case rspC <- resp:
+		case <-ctx.Done():
+			return
+		}
+	}
+	return
 }

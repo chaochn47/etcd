@@ -93,6 +93,13 @@ func (aa *authApplierV3) Range(ctx context.Context, txn mvcc.TxnRead, r *pb.Rang
 	return aa.applierV3.Range(ctx, txn, r)
 }
 
+func (aa *authApplierV3) RangeStream(ctx context.Context, txn mvcc.TxnRead, r *pb.RangeRequest, rspC chan *pb.RangeResponse, errC chan error) (*pb.RangeResponse, error) {
+	if err := aa.as.IsRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
+		return nil, err
+	}
+	return aa.applierV3.RangeStream(ctx, txn, r, rspC, errC)
+}
+
 func (aa *authApplierV3) DeleteRange(txn mvcc.TxnWrite, r *pb.DeleteRangeRequest) (*pb.DeleteRangeResponse, error) {
 	if err := aa.as.IsDeleteRangePermitted(&aa.authInfo, r.Key, r.RangeEnd); err != nil {
 		return nil, err
