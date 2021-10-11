@@ -21,6 +21,13 @@ service KV {
     };
   }
 
+  rpc RangeStream(RangeRequest) returns (stream RangeResponse) {
+      option (google.api.http) = {
+        post: "/v3/kv/rangestream"
+        body: "*"
+      };
+  }
+
   // Put puts the given key into the key-value store.
   // A put request increments the revision of the key-value store
   // and generates one event in the event history.
@@ -486,6 +493,10 @@ message RangeResponse {
   bool more = 3;
   // count is set to the number of keys within the range when requested.
   int64 count = 4;
+
+  int64 sub_count = 101;
+
+  int64 total_size = 102;
 }
 
 message PutRequest {
