@@ -1248,6 +1248,28 @@ func (c *ClusterV3) TakeClient(idx int) {
 	c.mu.Unlock()
 }
 
+func (c *ClusterV3) ReconcileClients(t testing.TB) {
+	c.mu.Lock()
+	for _, client := range c.clients {
+		if client == nil {
+			continue
+		}
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+	}
+	c.clients = make([]*clientv3.Client, 0)
+	for _, m := range c.Members {
+		client, err := NewClientV3(m)
+		if err != nil {
+			t.Fatalf("cannot create client: %v", err)
+		}
+		c.clients = append(c.clients, client)
+	}
+
+	c.mu.Unlock()
+}
+
 func (c *ClusterV3) Terminate(t testing.TB) {
 	c.mu.Lock()
 	for _, client := range c.clients {

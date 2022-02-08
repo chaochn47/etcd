@@ -139,6 +139,56 @@ func TestV3LeaseGrantByID(t *testing.T) {
 	}
 }
 
+func TestIssue12535(t *testing.T) {
+	defer testutil.AfterTest(t)
+	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	defer clus.Terminate(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// grant invalid negative leaseID
+	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(
+		ctx,
+		&pb.LeaseGrantRequest{ID: -1, TTL: 5})
+	if err != nil {
+		t.Errorf("could not create lease -1 (%v)", err)
+	}
+	if lresp.ID != -1 {
+		t.Errorf("got id %v, wanted id %v", lresp.ID, -1)
+	}
+
+	putr := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar"), Lease: lresp.ID}
+	if _, err := toGRPC(clus.RandClient()).KV.Put(ctx, putr); err != nil {
+		t.Fatal(err)
+	}
+
+	c := clus.cluster
+	c.RemoveMember(t, uint64(c.Members[2].s.ID()))
+	c.waitLeader(t, c.Members)
+
+	c.AddMember(t)
+	c.waitLeader(t, c.Members)
+
+	clus.ReconcileClients(t)
+
+	// revoke lease should remove key
+	_, err = toGRPC(clus.RandClient()).Lease.LeaseRevoke(ctx, &pb.LeaseRevokeRequest{ID: lresp.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	getr := &pb.RangeRequest{Key: []byte("foo")}
+	for _, client := range clus.clients {
+		getresp, err := toGRPC(client).KV.Range(ctx, getr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(getresp.Kvs) != 0 {
+			t.Errorf("lease removed but key remains")
+		}
+	}
+}
+
 // TestV3LeaseExpire ensures a key is deleted once a key expires.
 func TestV3LeaseExpire(t *testing.T) {
 	defer testutil.AfterTest(t)
