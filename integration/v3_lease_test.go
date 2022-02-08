@@ -141,7 +141,11 @@ func TestV3LeaseGrantByID(t *testing.T) {
 
 func TestIssue12535(t *testing.T) {
 	defer testutil.AfterTest(t)
-	clus := NewClusterV3(t, &ClusterConfig{Size: 3})
+	clus := NewClusterV3(t, &ClusterConfig{
+		Size:                   3,
+		SnapshotCount:          10,
+		SnapshotCatchUpEntries: 5,
+	})
 	defer clus.Terminate(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -149,7 +153,7 @@ func TestIssue12535(t *testing.T) {
 	// grant invalid negative leaseID
 	lresp, err := toGRPC(clus.RandClient()).Lease.LeaseGrant(
 		ctx,
-		&pb.LeaseGrantRequest{ID: -1, TTL: 5})
+		&pb.LeaseGrantRequest{ID: -1, TTL: 30})
 	if err != nil {
 		t.Errorf("could not create lease -1 (%v)", err)
 	}
@@ -158,8 +162,12 @@ func TestIssue12535(t *testing.T) {
 	}
 
 	putr := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar"), Lease: lresp.ID}
-	if _, err := toGRPC(clus.RandClient()).KV.Put(ctx, putr); err != nil {
-		t.Fatal(err)
+	// to trigger snapshot from the leader to new member
+	for i := 0; i < 15; i++ {
+		_, err := toGRPC(clus.RandClient()).KV.Put(ctx, putr)
+		if err != nil {
+			t.Errorf("#%d: couldn't put key (%v)", i, err)
+		}
 	}
 
 	c := clus.cluster
@@ -178,10 +186,17 @@ func TestIssue12535(t *testing.T) {
 	}
 
 	getr := &pb.RangeRequest{Key: []byte("foo")}
+	var revision int64
 	for _, client := range clus.clients {
 		getresp, err := toGRPC(client).KV.Range(ctx, getr)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if revision == 0 {
+			revision = getresp.Header.Revision
+		}
+		if revision != getresp.Header.Revision {
+			t.Errorf("expect revision %d, but got %d", revision, getresp.Header.Revision)
 		}
 		if len(getresp.Kvs) != 0 {
 			t.Errorf("lease removed but key remains")
