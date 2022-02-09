@@ -142,6 +142,70 @@ func TestV3LeaseGrantByID(t *testing.T) {
 	}
 }
 
+func TestIssue12535(t *testing.T) {
+	integration.BeforeTest(t)
+	clus := integration.NewCluster(t, &integration.ClusterConfig{
+		Size:                   3,
+		SnapshotCount:          10,
+		SnapshotCatchUpEntries: 5,
+	})
+	defer clus.Terminate(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// grant invalid negative leaseID
+	lresp, err := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(
+		ctx,
+		&pb.LeaseGrantRequest{ID: -1, TTL: 30})
+	if err != nil {
+		t.Errorf("could not create lease -1 (%v)", err)
+	}
+	if lresp.ID != -1 {
+		t.Errorf("got id %v, wanted id %v", lresp.ID, -1)
+	}
+
+	putr := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar"), Lease: lresp.ID}
+	// to trigger snapshot from the leader to new member
+	for i := 0; i < 15; i++ {
+		_, err := integration.ToGRPC(clus.RandClient()).KV.Put(ctx, putr)
+		if err != nil {
+			t.Errorf("#%d: couldn't put key (%v)", i, err)
+		}
+	}
+
+	if err := clus.RemoveMember(t, clus.Members[2].Client, uint64(clus.Members[2].ID())); err != nil {
+		t.Fatal(err)
+	}
+	clus.WaitMembersForLeader(t, clus.Members)
+
+	clus.AddMember(t)
+	clus.WaitMembersForLeader(t, clus.Members)
+
+	// revoke lease should remove key
+	_, err = integration.ToGRPC(clus.RandClient()).Lease.LeaseRevoke(ctx, &pb.LeaseRevokeRequest{ID: lresp.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	getr := &pb.RangeRequest{Key: []byte("foo")}
+	var revision int64
+	for _, m := range clus.Members {
+		getresp, err := integration.ToGRPC(m.Client).KV.Range(ctx, getr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if revision == 0 {
+			revision = getresp.Header.Revision
+		}
+		if revision != getresp.Header.Revision {
+			t.Errorf("expect revision %d, but got %d", revision, getresp.Header.Revision)
+		}
+		if len(getresp.Kvs) != 0 {
+			t.Errorf("lease removed but key remains")
+		}
+	}
+}
+
 // TestV3LeaseExpire ensures a key is deleted once a key expires.
 func TestV3LeaseExpire(t *testing.T) {
 	integration.BeforeTest(t)
