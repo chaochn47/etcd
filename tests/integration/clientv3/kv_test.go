@@ -377,6 +377,42 @@ func TestKVRange(t *testing.T) {
 				{Key: []byte("a"), Value: nil, CreateRevision: 2, ModRevision: 2, Version: 1},
 			},
 		},
+		// WithPaging + WithFromKey
+		{
+			"a", "",
+			0,
+			[]clientv3.OpOption{clientv3.WithPaging(), clientv3.WithFromKey()},
+			[]*mvccpb.KeyValue{
+				{Key: []byte("a"), Value: nil, CreateRevision: 2, ModRevision: 2, Version: 1},
+				{Key: []byte("b"), Value: nil, CreateRevision: 3, ModRevision: 3, Version: 1},
+				{Key: []byte("c"), Value: nil, CreateRevision: 4, ModRevision: 6, Version: 3},
+				{Key: []byte("foo"), Value: nil, CreateRevision: 7, ModRevision: 7, Version: 1},
+				{Key: []byte("foo/abc"), Value: nil, CreateRevision: 8, ModRevision: 8, Version: 1},
+				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
+			},
+		},
+		// WithPaging + WithFromKey + WithLimit
+		{
+			"a", "",
+			0,
+			[]clientv3.OpOption{clientv3.WithPaging(), clientv3.WithPageSize(1), clientv3.WithFromKey(), clientv3.WithLimit(3)},
+			[]*mvccpb.KeyValue{
+				{Key: []byte("a"), Value: nil, CreateRevision: 2, ModRevision: 2, Version: 1},
+				{Key: []byte("b"), Value: nil, CreateRevision: 3, ModRevision: 3, Version: 1},
+				{Key: []byte("c"), Value: nil, CreateRevision: 4, ModRevision: 6, Version: 3},
+			},
+		},
+		// WithPaging + WithRange(GetPrefixRangeEnd(key))
+		{
+			"fo", "",
+			0,
+			[]clientv3.OpOption{clientv3.WithPaging(), clientv3.WithRange(clientv3.GetPrefixRangeEnd("fo"))},
+			[]*mvccpb.KeyValue{
+				{Key: []byte("foo"), Value: nil, CreateRevision: 7, ModRevision: 7, Version: 1},
+				{Key: []byte("foo/abc"), Value: nil, CreateRevision: 8, ModRevision: 8, Version: 1},
+				{Key: []byte("fop"), Value: nil, CreateRevision: 9, ModRevision: 9, Version: 1},
+			},
+		},
 		// WithPrefix
 		{
 			"foo", "",
@@ -461,6 +497,10 @@ func TestKVRange(t *testing.T) {
 			t.Fatalf("#%d: resp.Kvs expected %+v, got %+v", i, tt.wantSet, resp.Kvs)
 		}
 	}
+}
+
+func TestKVRangeWithPaging(t *testing.T) {
+	// paging will not work if non-default sort target is given
 }
 
 func TestKVGetErrConnClosed(t *testing.T) {

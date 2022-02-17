@@ -33,6 +33,8 @@ var (
 	getRev         int64
 	getKeysOnly    bool
 	getCountOnly   bool
+	getPaging      bool
+	getPageSize    int64
 	printValueOnly bool
 )
 
@@ -53,6 +55,8 @@ func NewGetCommand() *cobra.Command {
 	cmd.Flags().Int64Var(&getRev, "rev", 0, "Specify the kv revision")
 	cmd.Flags().BoolVar(&getKeysOnly, "keys-only", false, "Get only the keys")
 	cmd.Flags().BoolVar(&getCountOnly, "count-only", false, "Get only the count")
+	cmd.Flags().BoolVar(&getPaging, "paging", false, "Get will be paginated")
+	cmd.Flags().Int64Var(&getPageSize, "page-size", 500, "Page size if paging is enabled")
 	cmd.Flags().BoolVar(&printValueOnly, "print-value-only", false, `Only write values when using the "simple" output format`)
 
 	cmd.RegisterFlagCompletionFunc("consistency", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
@@ -185,6 +189,10 @@ func getGetOp(args []string) (string, []clientv3.OpOption) {
 
 	if getCountOnly {
 		opts = append(opts, clientv3.WithCountOnly())
+	}
+
+	if getPaging {
+		opts = append(opts, clientv3.WithPaging(), clientv3.WithPageSize(getPageSize))
 	}
 
 	return key, opts

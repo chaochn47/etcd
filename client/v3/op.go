@@ -26,6 +26,8 @@ const (
 	tTxn
 )
 
+const defaultPageSize = 500
+
 var noPrefixEnd = []byte{0}
 
 // Op represents an Operation that kv can execute.
@@ -36,6 +38,8 @@ type Op struct {
 
 	// for range
 	limit        int64
+	paging       bool
+	pageSize     int64
 	sort         *SortOption
 	serializable bool
 	keysOnly     bool
@@ -135,6 +139,9 @@ func (op Op) MinCreateRev() int64 { return op.minCreateRev }
 
 // MaxCreateRev returns the operation's maximum create revision.
 func (op Op) MaxCreateRev() int64 { return op.maxCreateRev }
+
+// IsPagingEnabled returns if the operation enables paging
+func (op Op) IsPagingEnabled() bool { return op.paging }
 
 // WithRangeBytes sets the byte slice for the Op's range end.
 func (op *Op) WithRangeBytes(end []byte) { op.end = end }
@@ -340,6 +347,18 @@ func WithLease(leaseID LeaseID) OpOption {
 // WithLimit limits the number of results to return from 'Get' request.
 // If WithLimit is given a 0 limit, it is treated as no limit.
 func WithLimit(n int64) OpOption { return func(op *Op) { op.limit = n } }
+
+// WithPaging specifies split the 'Get' request into multiple pages
+// If page size is not given or 0, it is default to 500
+func WithPaging() OpOption {
+	return func(op *Op) {
+		op.paging = true
+		op.pageSize = defaultPageSize
+	}
+}
+
+// WithPageSize specifies the page size when paging is enabled.
+func WithPageSize(pageSize int64) OpOption { return func(op *Op) { op.pageSize = pageSize } }
 
 // WithRev specifies the store revision for 'Get' request.
 // Or the start revision of 'Watch' request.

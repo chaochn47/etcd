@@ -16,10 +16,10 @@ package clientv3
 
 import (
 	"context"
-	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
-
+	"fmt"
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
-
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"google.golang.org/grpc"
 )
 
@@ -146,14 +146,16 @@ func (kv *kv) Do(ctx context.Context, op Op) (OpResponse, error) {
 	var err error
 	switch op.t {
 	case tRange:
-		if op.IsSortOptionValid() {
-			var resp *pb.RangeResponse
-			resp, err = kv.remote.Range(ctx, op.toRangeRequest(), kv.callOpts...)
-			if err == nil {
-				return OpResponse{get: (*GetResponse)(resp)}, nil
-			}
-		} else {
-			err = rpctypes.ErrInvalidSortOption
+		if !op.IsSortOptionValid() {
+			return OpResponse{}, toErr(ctx, rpctypes.ErrInvalidSortOption)
+		}
+		if op.IsPagingEnabled() {
+			return kv.rangeWithPaging(ctx, op)
+		}
+		var resp *pb.RangeResponse
+		resp, err = kv.remote.Range(ctx, op.toRangeRequest(), kv.callOpts...)
+		if err == nil {
+			return OpResponse{get: (*GetResponse)(resp)}, nil
 		}
 	case tPut:
 		var resp *pb.PutResponse
@@ -179,4 +181,49 @@ func (kv *kv) Do(ctx context.Context, op Op) (OpResponse, error) {
 		panic("Unknown op")
 	}
 	return OpResponse{}, toErr(ctx, err)
+}
+
+func (kv *kv) rangeWithPaging(ctx context.Context, op Op) (OpResponse, error) {
+	fmt.Println(fmt.Sprintf("******testing******; option is %+v", op))
+	result := &pb.RangeResponse{}
+	result.Kvs = make([]*mvccpb.KeyValue, 0)
+
+	originalLimit := int(op.limit)
+	op.limit = op.pageSize
+
+	var lastKey []byte
+	for {
+		fmt.Println(fmt.Sprintf("******testing******; executing option is %+v", op))
+		fmt.Println(fmt.Sprintf("******testing******; range request is: %+v", op.toRangeRequest()))
+		rangeResp, err := kv.remote.Range(ctx, op.toRangeRequest(), kv.callOpts...)
+		if err != nil {
+			return OpResponse{}, toErr(ctx, err)
+		}
+
+		// set result header and count in the first query
+		if result.Header == nil && result.Count == 0 {
+			result.Header = rangeResp.Header
+			result.Count = rangeResp.Count
+		}
+
+		// if no initial revision is provided, use the revision returned in the first query
+		if op.rev == 0 {
+			op.rev = rangeResp.Header.Revision
+		}
+
+		for _, kv := range rangeResp.Kvs {
+			if originalLimit > 0 && len(result.Kvs) >= originalLimit {
+				return OpResponse{get: (*GetResponse)(result)}, nil
+			}
+			result.Kvs = append(result.Kvs, kv)
+			lastKey = kv.Key
+		}
+
+		if !rangeResp.More {
+			break
+		}
+		op.key = append(lastKey, []byte("\x00")...)
+	}
+	fmt.Println(fmt.Sprintf("******testing******; range result is: %+v", result))
+	return OpResponse{get: (*GetResponse)(result)}, nil
 }
