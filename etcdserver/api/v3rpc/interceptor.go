@@ -333,3 +333,22 @@ func metadataGet(md metadata.MD, k string) []string {
 	k = strings.ToLower(k)
 	return md[k]
 }
+
+func newQmonInterceptor(s *etcdserver.EtcdServer) grpc.UnaryServerInterceptor {
+	qmonitor := NewQueryMonitor(s, BuildQueryMonitorCfg(s))
+	qmonitor.Start()
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+		var err error
+		if !qmonitor.AdmitReq(req) {
+			err = rpctypes.ErrGRPCQmonTooManyRequests
+			return nil, err
+		}
+		resp, err := handler(ctx, req)
+		defer updateQueryMonitor(qmonitor, req, resp, err)
+		return resp, err
+	}
+}
+
+func updateQueryMonitor(qmon QueryMonitor, req interface{}, resp interface{}, err error) {
+	qmon.UpdateUsage(req, resp, err)
+}

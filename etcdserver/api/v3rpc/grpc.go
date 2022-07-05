@@ -41,11 +41,22 @@ func Server(s *etcdserver.EtcdServer, tls *tls.Config, gopts ...grpc.ServerOptio
 		bundle := credentials.NewBundle(credentials.Config{TLSConfig: tls})
 		opts = append(opts, grpc.Creds(bundle.TransportCredentials()))
 	}
-	opts = append(opts, grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
-		newLogUnaryInterceptor(s),
-		newUnaryInterceptor(s),
-		grpc_prometheus.UnaryServerInterceptor,
-	)))
+
+	if s.Cfg.ExperimentalQmonEnableBandwidthThrottle {
+		opts = append(opts, grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			newLogUnaryInterceptor(s),
+			newUnaryInterceptor(s),
+			grpc_prometheus.UnaryServerInterceptor,
+			newQmonInterceptor(s),
+		)))
+	} else {
+		opts = append(opts, grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+			newLogUnaryInterceptor(s),
+			newUnaryInterceptor(s),
+			grpc_prometheus.UnaryServerInterceptor,
+		)))
+	}
+
 	opts = append(opts, grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
 		newStreamInterceptor(s),
 		grpc_prometheus.StreamServerInterceptor,

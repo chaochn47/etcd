@@ -368,6 +368,17 @@ type Config struct {
 	// For instance, lease checkpointer request to 3.4 will fail the remaining 3.3 nodes.
 	// But, if one does not use "lease checkpointer" feature, it can be safe to run 3.3 along with 3.4.
 	UnsafeAllowClusterVersionDowngrade bool `json:"unsafe-allow-cluster-version-downgrade"`
+	// ExperimentalQmonEnableBandwidthThrottle indicates if experimental query monitor to do memory pressure aware bandwidth throttling is enabled.
+	ExperimentalQmonEnableBandwidthThrottle bool `json:"experimental-qmon-enable-bandwidth-throttle"`
+
+	// ExperimentalQmonMemoryBudgetMegabytes is the total memory budget for the process. Throttle will begin if the processes exceeds this.
+	ExperimentalQmonMemoryBudgetMegabytes uint `json:"experimental-qmon-memory-budget-megabytes"`
+
+	// ExperimentalQmonThrottleEnableAtPercent throttle is enabled when rss crosses this percent of total memory budget
+	ExperimentalQmonThrottleEnableAtPercent uint `json:"experimental-qmon-throttle-enable-at-percent"`
+
+	// ExperimentalQmonAlwaysOnForLargeReq indicates that large requests (more than 64MB size) will always get throttled
+	ExperimentalQmonAlwaysOnForLargeReq bool `json:"experimental-qmon-always-on-for-large-req"`
 }
 
 // configYAML holds the config suitable for yaml parsing

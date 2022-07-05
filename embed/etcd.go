@@ -212,6 +212,11 @@ func StartEtcd(inCfg *Config) (e *Etcd, err error) {
 		CompactionBatchLimit:               cfg.ExperimentalCompactionBatchLimit,
 		WatchProgressNotifyInterval:        cfg.ExperimentalWatchProgressNotifyInterval,
 		WarningApplyDuration:               cfg.ExperimentalWarningApplyDuration,
+
+		ExperimentalQmonEnableBandwidthThrottle: cfg.ExperimentalQmonEnableBandwidthThrottle,
+		ExperimentalQmonMemoryBudgetMegabytes:   cfg.ExperimentalQmonMemoryBudgetMegabytes,
+		ExperimentalQmonThrottleEnableAtPercent: cfg.ExperimentalQmonThrottleEnableAtPercent,
+		ExperimentalQmonAlwaysOnForLargeReq:     cfg.ExperimentalQmonAlwaysOnForLargeReq,
 	}
 	print(e.cfg.logger, *cfg, srvcfg, memberInitialized)
 	if e.Server, err = etcdserver.NewServer(srvcfg); err != nil {

@@ -264,6 +264,11 @@ func newConfig() *config {
 	fs.DurationVar(&cfg.ec.ExperimentalWatchProgressNotifyInterval, "experimental-watch-progress-notify-interval", cfg.ec.ExperimentalWatchProgressNotifyInterval, "Duration of periodic watch progress notifications.")
 	fs.DurationVar(&cfg.ec.ExperimentalWarningApplyDuration, "experimental-warning-apply-duration", cfg.ec.ExperimentalWarningApplyDuration, "Time duration after which a warning is generated if request takes more time.")
 
+	fs.BoolVar(&cfg.ec.ExperimentalQmonEnableBandwidthThrottle, "experimental-qmon-enable-bandwidth-throttle", false, "Enable experimental query monitor to do memory pressure aware bandwidth throttle.")
+	fs.UintVar(&cfg.ec.ExperimentalQmonMemoryBudgetMegabytes, "experimental-qmon-memory-budget-megabytes", 0, "Total memory budget. Throttling will begin if the process exceeds this")
+	fs.UintVar(&cfg.ec.ExperimentalQmonThrottleEnableAtPercent, "experimental-qmon-throttle-enable-at-percent", 0, "Requests will be throttled process memory exceeds this much percent of total memory budget")
+	fs.BoolVar(&cfg.ec.ExperimentalQmonAlwaysOnForLargeReq, "experimental-qmon-always-on-for-large-req", false, "Always throttle large range requests. Large req threshold is 64MB")
+
 	// unsafe
 	fs.BoolVar(&cfg.ec.UnsafeNoFsync, "unsafe-no-fsync", false, "Disables fsync, unsafe, will cause data loss.")
 	fs.BoolVar(&cfg.ec.ForceNewCluster, "force-new-cluster", false, "Force to create a new one member cluster.")
