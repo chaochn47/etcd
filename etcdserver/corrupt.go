@@ -214,7 +214,7 @@ func (s *EtcdServer) checkHashKV() error {
 		}
 		s.goAttach(func() {
 			s.raftRequest(s.ctx, pb.InternalRaftRequest{Alarm: a})
-		})
+		}, "checkHashKV")
 	}
 
 	if h2 != h && rev2 == rev && crev == crev2 {

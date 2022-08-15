@@ -44,6 +44,7 @@ import (
 	"go.etcd.io/etcd/etcdserver/api/v2store"
 	"go.etcd.io/etcd/etcdserver/api/v3alarm"
 	"go.etcd.io/etcd/etcdserver/api/v3compactor"
+	"go.etcd.io/etcd/etcdserver/etcdserverpb"
 	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
 	"go.etcd.io/etcd/lease"
 	"go.etcd.io/etcd/lease/leasehttp"
@@ -738,13 +739,13 @@ func (s *EtcdServer) adjustTicks() {
 // should be implemented in goroutines.
 func (s *EtcdServer) Start() {
 	s.start()
-	s.goAttach(func() { s.adjustTicks() })
-	s.goAttach(func() { s.publish(s.Cfg.ReqTimeout()) })
-	s.goAttach(s.purgeFile)
-	s.goAttach(func() { monitorFileDescriptor(s.getLogger(), s.stopping) })
-	s.goAttach(s.monitorVersions)
-	s.goAttach(s.linearizableReadLoop)
-	s.goAttach(s.monitorKVHash)
+	s.goAttach(func() { s.adjustTicks() }, "adjustTicks")
+	s.goAttach(func() { s.publish(s.Cfg.ReqTimeout()) }, "publish")
+	s.goAttach(s.purgeFile, "purgeFile")
+	s.goAttach(func() { monitorFileDescriptor(s.getLogger(), s.stopping) }, "monitorFileDescriptor")
+	s.goAttach(s.monitorVersions, "monitorVersions")
+	s.goAttach(s.linearizableReadLoop, "linearizableReadLoop")
+	s.goAttach(s.monitorKVHash, "monitorKVHash")
 }
 
 // start prepares and starts server in a new goroutine. It is no longer safe to
@@ -941,7 +942,7 @@ func (s *EtcdServer) run() {
 	}
 
 	// asynchronously accept apply packets, dispatch progress in-order
-	sched := schedule.NewFIFOScheduler()
+	sched := schedule.NewFIFOScheduler(lg)
 
 	var (
 		smu   sync.RWMutex
@@ -1013,20 +1014,26 @@ func (s *EtcdServer) run() {
 
 	defer func() {
 		s.wgMu.Lock() // block concurrent waitgroup adds in goAttach while stopping
+		lg.Info("close s.stopping channel")
 		close(s.stopping)
 		s.wgMu.Unlock()
 		s.cancel()
 
+		lg.Info("stopping fifo scheduler")
 		sched.Stop()
 
+		lg.Info("wait for goroutines before closing raft so wal stays open")
 		// wait for gouroutines before closing raft so wal stays open
 		s.wg.Wait()
+		lg.Info("all goroutines already exited after closing s.stopping")
 
 		s.SyncTicker.Stop()
 
 		// must stop raft after scheduler-- etcdserver can leak rafthttp pipelines
 		// by adding a peer after raft stops the transport
+		lg.Info("start stopping raft")
 		s.r.stop()
+		lg.Info("raft is stopped")
 
 		// kv, lessor and backend can be nil if running without v3 enabled
 		// or running unit tests.
@@ -1056,7 +1063,7 @@ func (s *EtcdServer) run() {
 	for {
 		select {
 		case ap := <-s.r.apply():
-			f := func(context.Context) { s.applyAll(&ep, &ap) }
+			f := schedule.NewJob("server_applyAll", func(context.Context) { s.applyAll(&ep, &ap) })
 			sched.Schedule(f)
 		case leases := <-expiredLeaseC:
 			s.goAttach(func() {
@@ -1087,9 +1094,9 @@ func (s *EtcdServer) run() {
 						}
 
 						<-c
-					})
+					}, "revoking lease")
 				}
-			})
+			}, "handling expiredLeases")
 		case err := <-s.errorc:
 			if lg != nil {
 				lg.Warn("server error", zap.Error(err))
@@ -1119,7 +1126,55 @@ func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
 	// wait for the raft routine to finish the disk writes before triggering a
 	// snapshot. or applied index might be greater than the last index in raft
 	// storage, since the raft routine might be slower than apply routine.
+
+	s.lg.Info("blocking at apply.notifyc")
+	if len(apply.entries) > 0 {
+		for i, entry := range apply.entries {
+			var r raftpb.ConfChange
+			if err := r.Unmarshal(entry.Data); err == nil {
+				s.lg.Info("unmarshalled apply entry", zap.Stringer("method", r.Type),
+					zap.Uint64("id", r.NodeID),
+					zap.Int("entry-num", i),
+				)
+				continue
+			}
+			var rr etcdserverpb.InternalRaftRequest
+			if err := rr.Unmarshal(entry.Data); err == nil {
+				s.lg.Info("unmarshalled apply entry", zap.String("method", "InternalRaftRequest"),
+					zap.Uint64("term", entry.Term),
+					zap.Uint64("index", entry.Index),
+					zap.String("data", rr.String()),
+					zap.Int("entry-num", i),
+				)
+				continue
+			}
+
+			var rrr etcdserverpb.Request
+			if err := rrr.Unmarshal(entry.Data); err == nil {
+				zapFields := []zap.Field{
+					zap.Uint64("term", entry.Term),
+					zap.Uint64("index", entry.Index),
+					zap.Int("entry-num", i),
+				}
+				switch rrr.Method {
+				case "":
+					s.lg.Info("noop")
+				case "SYNC":
+					zapFields = append(zapFields, zap.String("method", "sync"), zap.Time("time", time.Unix(0, rrr.Time)))
+					s.lg.Info("unmarshalled apply entry", zapFields...)
+				case "QGET", "DELETE":
+					zapFields = append(zapFields, zap.String("method", rrr.Method), zap.String("path", excerpt(rrr.Path, 64, 64)))
+					s.lg.Info("unmarshalled apply entry", zapFields...)
+				default:
+					zapFields = append(zapFields, zap.String("method", rrr.Method), zap.String("path", excerpt(rrr.Path, 64, 64)), zap.String("val", excerpt(rrr.Val, 128, 0)))
+					s.lg.Info("unmarshalled apply entry", zapFields...)
+				}
+			}
+			s.lg.Info("failed to unmarshal apply entry")
+		}
+	}
 	<-apply.notifyc
+	s.lg.Info("apply.notifyc returned")
 
 	s.triggerSnapshot(ep)
 	select {
@@ -1129,6 +1184,13 @@ func (s *EtcdServer) applyAll(ep *etcdProgress, apply *apply) {
 		s.sendMergedSnap(merged)
 	default:
 	}
+}
+
+func excerpt(str string, pre, suf int) string {
+	if pre+suf > len(str) {
+		return fmt.Sprintf("%q", str)
+	}
+	return fmt.Sprintf("%q...%q", str[:pre], str[len(str)-suf:])
 }
 
 func (s *EtcdServer) applySnapshot(ep *etcdProgress, apply *apply) {
@@ -1996,7 +2058,7 @@ func (s *EtcdServer) sync(timeout time.Duration) {
 	s.goAttach(func() {
 		s.r.Propose(ctx, data)
 		cancel()
-	})
+	}, "sync")
 }
 
 // publish registers server information into the cluster. The information
@@ -2121,7 +2183,7 @@ func (s *EtcdServer) sendMergedSnap(merged snap.Message) {
 			}
 			return
 		}
-	})
+	}, "sendMergedSnap")
 }
 
 // apply takes entries received from Raft (after it has been committed) and
@@ -2252,7 +2314,7 @@ func (s *EtcdServer) applyEntryNormal(e *raftpb.Entry) {
 		}
 		s.raftRequest(s.ctx, pb.InternalRaftRequest{Alarm: a})
 		s.w.Trigger(id, ar)
-	})
+	}, "activating no space alarm")
 }
 
 // applyConfChange applies a ConfChange to the server. It is only
@@ -2444,7 +2506,7 @@ func (s *EtcdServer) snapshot(snapi uint64, confState raftpb.ConfState) {
 		} else {
 			plog.Infof("compacted raft log at %d", compacti)
 		}
-	})
+	}, "snapshot")
 }
 
 // CutPeer drops messages to the specified peer.
@@ -2508,14 +2570,14 @@ func (s *EtcdServer) monitorVersions() {
 			if v != nil {
 				verStr = v.String()
 			}
-			s.goAttach(func() { s.updateClusterVersion(verStr) })
+			s.goAttach(func() { s.updateClusterVersion(verStr) }, "update cluster version Line 2511")
 			continue
 		}
 
 		// update cluster version only if the decided version is greater than
 		// the current cluster version
 		if v != nil && s.cluster.Version().LessThan(*v) {
-			s.goAttach(func() { s.updateClusterVersion(v.String()) })
+			s.goAttach(func() { s.updateClusterVersion(v.String()) }, "update cluster version Line 2518")
 		}
 	}
 }
@@ -2638,7 +2700,7 @@ func (s *EtcdServer) restoreAlarms() error {
 
 // goAttach creates a goroutine on a given function and tracks it using
 // the etcdserver waitgroup.
-func (s *EtcdServer) goAttach(f func()) {
+func (s *EtcdServer) goAttach(f func(), name string) {
 	s.wgMu.RLock() // this blocks with ongoing close(s.stopping)
 	defer s.wgMu.RUnlock()
 	select {
@@ -2655,8 +2717,12 @@ func (s *EtcdServer) goAttach(f func()) {
 	// now safe to add since waitgroup wait has not started yet
 	s.wg.Add(1)
 	go func() {
-		defer s.wg.Done()
+		defer func() {
+			s.lg.Info("exit", zap.String("func name", name))
+			s.wg.Done()
+		}()
 		f()
+		s.lg.Info("running", zap.String("func name", name))
 	}()
 }
 

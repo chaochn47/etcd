@@ -132,7 +132,7 @@ func NewStore(lg *zap.Logger, b backend.Backend, le lease.Lessor, ig ConsistentI
 		compactMainRev: -1,
 
 		bytesBuf8: make([]byte, 8),
-		fifoSched: schedule.NewFIFOScheduler(),
+		fifoSched: schedule.NewFIFOScheduler(lg),
 
 		stopc: make(chan struct{}),
 
@@ -171,7 +171,7 @@ func (s *store) compactBarrier(ctx context.Context, ch chan struct{}) {
 			// snapshot call, compaction and apply snapshot requests are serialized by
 			// raft, and do not happen at the same time.
 			s.mu.Lock()
-			f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
+			f := schedule.NewJob("kvstore_compactBarrier", func(ctx context.Context) { s.compactBarrier(ctx, ch) })
 			s.fifoSched.Schedule(f)
 			s.mu.Unlock()
 		}
@@ -247,7 +247,7 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 	s.revMu.Lock()
 	if rev <= s.compactMainRev {
 		ch := make(chan struct{})
-		f := func(ctx context.Context) { s.compactBarrier(ctx, ch) }
+		f := schedule.NewJob("kvstore_updateCompactRev_compactBarrier", func(ctx context.Context) { s.compactBarrier(ctx, ch) })
 		s.fifoSched.Schedule(f)
 		s.revMu.Unlock()
 		return ch, ErrCompacted
@@ -276,7 +276,7 @@ func (s *store) updateCompactRev(rev int64) (<-chan struct{}, error) {
 
 func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, error) {
 	ch := make(chan struct{})
-	var j = func(ctx context.Context) {
+	j := schedule.NewJob("kvstore_compact", func(ctx context.Context) {
 		if ctx.Err() != nil {
 			s.compactBarrier(ctx, ch)
 			return
@@ -289,7 +289,7 @@ func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 			return
 		}
 		close(ch)
-	}
+	})
 
 	s.fifoSched.Schedule(j)
 	trace.Step("schedule compaction")
@@ -353,7 +353,7 @@ func (s *store) Restore(b backend.Backend) error {
 	s.kvindex = newTreeIndex(s.lg)
 	s.currentRev = 1
 	s.compactMainRev = -1
-	s.fifoSched = schedule.NewFIFOScheduler()
+	s.fifoSched = schedule.NewFIFOScheduler(s.lg)
 	s.stopc = make(chan struct{})
 
 	return s.restore()

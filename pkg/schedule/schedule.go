@@ -17,9 +17,34 @@ package schedule
 import (
 	"context"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
-type Job func(context.Context)
+type Job interface {
+	Name() string
+	Do(context.Context)
+}
+
+type job struct {
+	name string
+	do   func(context.Context)
+}
+
+func (j job) Name() string {
+	return j.name
+}
+
+func (j job) Do(ctx context.Context) {
+	j.do(ctx)
+}
+
+func NewJob(name string, do func(ctx context.Context)) Job {
+	return job{
+		name: name,
+		do:   do,
+	}
+}
 
 // Scheduler can schedule jobs.
 type Scheduler interface {
@@ -56,14 +81,16 @@ type fifo struct {
 
 	finishCond *sync.Cond
 	donec      chan struct{}
+	lg         *zap.Logger
 }
 
 // NewFIFOScheduler returns a Scheduler that schedules jobs in FIFO
 // order sequentially
-func NewFIFOScheduler() Scheduler {
+func NewFIFOScheduler(lg *zap.Logger) Scheduler {
 	f := &fifo{
 		resume: make(chan struct{}, 1),
 		donec:  make(chan struct{}, 1),
+		lg:     lg,
 	}
 	f.finishCond = sync.NewCond(&f.mu)
 	f.ctx, f.cancel = context.WithCancel(context.Background())
@@ -120,8 +147,11 @@ func (f *fifo) Stop() {
 	f.mu.Lock()
 	f.cancel()
 	f.cancel = nil
+	f.lg.Info("fifo cancelled")
 	f.mu.Unlock()
+	f.lg.Info("waiting for fifo scheduler finished all jobs")
 	<-f.donec
+	f.lg.Info("fifo scheduler finished all jobs")
 }
 
 func (f *fifo) run() {
@@ -149,17 +179,33 @@ func (f *fifo) run() {
 				f.mu.Unlock()
 				// clean up pending jobs
 				for _, todo := range pendings {
-					todo(f.ctx)
+					f.lg.Info("executing job; update finish stats", zap.String("job", todo.Name()))
+					f.executeJob(todo, true)
+					f.lg.Info("executed job; update finish stats", zap.String("job", todo.Name()))
 				}
 				return
 			}
 		} else {
-			todo(f.ctx)
+			f.lg.Info("executing job; does not update finish stats", zap.String("job", todo.Name()))
+			f.executeJob(todo, false)
+			f.lg.Info("executed job; does not update finish stats", zap.String("job", todo.Name()))
+		}
+	}
+}
+
+func (f *fifo) executeJob(todo Job, updatedFinishedStats bool) {
+	defer func() {
+		if !updatedFinishedStats {
 			f.finishCond.L.Lock()
 			f.finished++
 			f.pendings = f.pendings[1:]
 			f.finishCond.Broadcast()
 			f.finishCond.L.Unlock()
 		}
-	}
+		if err := recover(); err != nil {
+			f.lg.Panic("execute job failed", zap.String("job", todo.Name()), zap.Any("panic", err))
+		}
+	}()
+
+	todo.Do(f.ctx)
 }
