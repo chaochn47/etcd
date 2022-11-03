@@ -16,8 +16,9 @@ package linearizability
 
 import (
 	"errors"
-	"github.com/anishathalye/porcupine"
 	"testing"
+
+	"github.com/anishathalye/porcupine"
 )
 
 func TestModel(t *testing.T) {
@@ -76,7 +77,6 @@ func TestModel(t *testing.T) {
 				if ok {
 					t.Errorf("Unexpected succesfull operation: %s", etcdModel.DescribeOperation(tc.failOperation.Input, tc.failOperation.Output))
 				}
-
 			}
 		})
 	}

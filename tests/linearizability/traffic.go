@@ -43,7 +43,7 @@ func (t putGetTraffic) Run(ctx context.Context, c *recordingClient, limiter *rat
 			return
 		default:
 		}
-		getCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		getCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		err := c.Get(getCtx, key)
 		cancel()
 		if err != nil {
@@ -51,7 +51,7 @@ func (t putGetTraffic) Run(ctx context.Context, c *recordingClient, limiter *rat
 		}
 		limiter.Wait(ctx)
 		putData := fmt.Sprintf("%d", id+i)
-		putCtx, cancel := context.WithTimeout(ctx, 20*time.Millisecond)
+		putCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 		err = c.Put(putCtx, key, putData)
 		cancel()
 		if err != nil {

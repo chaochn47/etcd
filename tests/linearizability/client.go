@@ -21,6 +21,7 @@ import (
 	"github.com/anishathalye/porcupine"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 )
 
 type recordingClient struct {
@@ -32,10 +33,13 @@ type recordingClient struct {
 
 func NewClient(endpoints []string, id int) (*recordingClient, error) {
 	cc, err := clientv3.New(clientv3.Config{
+		DialOptions:          []grpc.DialOption{grpc.WithBlock()},
 		Endpoints:            endpoints,
 		Logger:               zap.NewNop(),
 		DialKeepAliveTime:    1 * time.Millisecond,
 		DialKeepAliveTimeout: 5 * time.Millisecond,
+		Username:             "test-user",
+		Password:             "abc",
 	})
 	if err != nil {
 		return nil, err

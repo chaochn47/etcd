@@ -24,6 +24,8 @@ import (
 	"time"
 
 	"github.com/anishathalye/porcupine"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/tests/v3/framework/config"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
 	"golang.org/x/time/rate"
 )
@@ -46,26 +48,34 @@ func TestLinearizability(t *testing.T) {
 		failpoint Failpoint
 		config    e2e.EtcdProcessClusterConfig
 	}{
+		//{
+		//	name:      "KillClusterOfSize1",
+		//	failpoint: KillFailpoint,
+		//	config: e2e.EtcdProcessClusterConfig{
+		//		ClusterSize: 1,
+		//	},
+		//},
+		//{
+		//	name:      "KillClusterOfSize3",
+		//	failpoint: KillFailpoint,
+		//	config: e2e.EtcdProcessClusterConfig{
+		//		ClusterSize: 3,
+		//	},
+		//},
+		//{
+		//	name:      "Issue14370",
+		//	failpoint: RaftBeforeSavePanic,
+		//	config: e2e.EtcdProcessClusterConfig{
+		//		ClusterSize:   1,
+		//		GoFailEnabled: true,
+		//	},
+		//},
 		{
-			name:      "KillClusterOfSize1",
+			name:      "Issue14571",
 			failpoint: KillFailpoint,
 			config: e2e.EtcdProcessClusterConfig{
-				ClusterSize: 1,
-			},
-		},
-		{
-			name:      "KillClusterOfSize3",
-			failpoint: KillFailpoint,
-			config: e2e.EtcdProcessClusterConfig{
-				ClusterSize: 3,
-			},
-		},
-		{
-			name:      "Issue14370",
-			failpoint: RaftBeforeSavePanic,
-			config: e2e.EtcdProcessClusterConfig{
-				ClusterSize:   1,
-				GoFailEnabled: true,
+				ClusterSize:   3,
+				SnapshotCount: 50,
 			},
 		},
 	}
@@ -87,12 +97,37 @@ func TestLinearizability(t *testing.T) {
 	}
 }
 
-func testLinearizability(ctx context.Context, t *testing.T, config e2e.EtcdProcessClusterConfig, failpoint FailpointConfig, traffic trafficConfig) {
-	clus, err := e2e.NewEtcdProcessCluster(ctx, t, &config)
+func testLinearizability(ctx context.Context, t *testing.T, cfg e2e.EtcdProcessClusterConfig, failpoint FailpointConfig, traffic trafficConfig) {
+	clus, err := e2e.NewEtcdProcessCluster(ctx, t, &cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer clus.Close()
+	etcdctl := clus.Client()
+	if _, err = etcdctl.UserAdd(ctx, "root", "123", config.UserAddOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.RoleAdd(ctx, "root"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.UserGrantRole(ctx, "root", "root"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.UserAdd(ctx, "test-user", "abc", config.UserAddOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.RoleAdd(ctx, "test-role"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.UserGrantRole(ctx, "test-user", "test-role"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = etcdctl.RoleGrantPermission(ctx, "test-role", "key", "", clientv3.PermissionType(clientv3.PermReadWrite)); err != nil {
+		t.Fatal(err)
+	}
+	if err = etcdctl.AuthEnable(ctx); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		defer cancel()
