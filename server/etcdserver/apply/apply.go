@@ -247,14 +247,19 @@ func (a *applierV3backend) Alarm(ar *pb.AlarmRequest) (*pb.AlarmResponse, error)
 
 type applierV3Capped struct {
 	applierV3
-	q serverstorage.BackendQuota
+	q  serverstorage.BackendQuota
+	lg *zap.Logger
 }
 
 // newApplierV3Capped creates an applyV3 that will reject Puts and transactions
 // with Puts so that the number of keys in the store is capped.
-func newApplierV3Capped(base applierV3) applierV3 { return &applierV3Capped{applierV3: base} }
+func newApplierV3Capped(lg *zap.Logger, base applierV3) applierV3 {
+	lg.Info("creating v3 capped applier")
+	return &applierV3Capped{applierV3: base, lg: lg}
+}
 
 func (a *applierV3Capped) Put(_ context.Context, _ mvcc.TxnWrite, _ *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
+	a.lg.Info("put is rejected due to no space alarm")
 	return nil, nil, errors.ErrNoSpace
 }
 
@@ -439,16 +444,26 @@ func (a *applierV3backend) DowngradeInfoSet(r *membershippb.DowngradeInfoSetRequ
 
 type quotaApplierV3 struct {
 	applierV3
-	q serverstorage.Quota
+	q  serverstorage.Quota
+	lg *zap.Logger
 }
 
 func newQuotaApplierV3(lg *zap.Logger, quotaBackendBytesCfg int64, be backend.Backend, app applierV3) applierV3 {
-	return &quotaApplierV3{app, serverstorage.NewBackendQuota(lg, quotaBackendBytesCfg, be, "v3-applier")}
+	lg.Info("creating quota applier v3")
+	return &quotaApplierV3{
+		applierV3: app,
+		q:         serverstorage.NewBackendQuota(lg, quotaBackendBytesCfg, be, "v3-applier"),
+		lg:        lg,
+	}
 }
 
 func (a *quotaApplierV3) Put(ctx context.Context, txn mvcc.TxnWrite, p *pb.PutRequest) (*pb.PutResponse, *traceutil.Trace, error) {
 	ok := a.q.Available(p)
 	resp, trace, err := a.applierV3.Put(ctx, txn, p)
+	a.lg.Info("quotaApplierV3 put result",
+		zap.Bool("available", ok),
+		zap.Error(err),
+	)
 	if err == nil && !ok {
 		err = errors.ErrNoSpace
 	}

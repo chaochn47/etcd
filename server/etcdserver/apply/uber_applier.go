@@ -100,7 +100,7 @@ func (a *uberApplier) restoreAlarms() {
 	corruptAlarms := len(a.alarmStore.Get(pb.AlarmType_CORRUPT)) > 0
 	a.applyV3 = a.applyV3base
 	if noSpaceAlarms {
-		a.applyV3 = newApplierV3Capped(a.applyV3)
+		a.applyV3 = newApplierV3Capped(a.lg, a.applyV3)
 	}
 	if corruptAlarms {
 		a.applyV3 = newApplierV3Corrupt(a.applyV3)
