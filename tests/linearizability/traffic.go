@@ -18,23 +18,34 @@ import (
 	"context"
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/tests/v3/framework/config"
+	"go.etcd.io/etcd/tests/v3/framework/interfaces"
+	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 )
 
 var (
-	DefaultTraffic Traffic = readWriteSingleKey{key: "key", writes: []opChance{{operation: Put, chance: 90}, {operation: Delete, chance: 5}, {operation: Txn, chance: 5}}}
+	DefaultTraffic         Traffic = readWriteSingleKey{key: "key", writes: []opChance{{operation: Put, chance: 90}, {operation: Delete, chance: 5}, {operation: Txn, chance: 5}}}
+	DefaultTrafficWithAuth Traffic = readWriteSingleKey{key: "key", writes: []opChance{{operation: Put, chance: 90}, {operation: Delete, chance: 5}, {operation: Txn, chance: 5}}, authEnabled: true}
 )
 
 type Traffic interface {
+	PreRun(ctx context.Context, c interfaces.Client, lg *zap.Logger) error
 	Run(ctx context.Context, c *recordingClient, limiter *rate.Limiter, ids idProvider)
+
+	AuthEnabled() bool
 }
 
 type readWriteSingleKey struct {
 	key    string
 	writes []opChance
+
+	authEnabled bool
 }
 
 type opChance struct {
@@ -42,8 +53,15 @@ type opChance struct {
 	chance    int
 }
 
-func (t readWriteSingleKey) Run(ctx context.Context, c *recordingClient, limiter *rate.Limiter, ids idProvider) {
+func (t readWriteSingleKey) PreRun(ctx context.Context, c interfaces.Client, lg *zap.Logger) error {
+	if t.AuthEnabled() {
+		lg.Info("set up auth")
+		return setupAuth(ctx, c)
+	}
+	return nil
+}
 
+func (t readWriteSingleKey) Run(ctx context.Context, c *recordingClient, limiter *rate.Limiter, ids idProvider) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -52,12 +70,16 @@ func (t readWriteSingleKey) Run(ctx context.Context, c *recordingClient, limiter
 		}
 		// Execute one read per one write to avoid operation history include too many failed writes when etcd is down.
 		resp, err := t.Read(ctx, c, limiter)
-		if err != nil {
+		if err != nil && !strings.Contains(err.Error(), "etcdserver: permission denied") {
 			continue
 		}
 		// Provide each write with unique id to make it easier to validate operation history.
 		t.Write(ctx, c, limiter, ids.RequestId(), resp)
 	}
+}
+
+func (t readWriteSingleKey) AuthEnabled() bool {
+	return t.authEnabled
 }
 
 func (t readWriteSingleKey) Read(ctx context.Context, c *recordingClient, limiter *rate.Limiter) ([]*mvccpb.KeyValue, error) {
@@ -108,4 +130,41 @@ func (t readWriteSingleKey) pickWriteOperation() Operation {
 		roll -= op.chance
 	}
 	panic("unexpected")
+}
+
+const (
+	rootUserName     = "root"
+	rootRoleName     = "root"
+	rootUserPassword = "123"
+	testUserName     = "test-user"
+	testRoleName     = "test-role"
+	testUserPassword = "abc"
+)
+
+func setupAuth(ctx context.Context, c interfaces.Client) error {
+	if _, err := c.UserAdd(ctx, rootUserName, rootUserPassword, config.UserAddOptions{}); err != nil {
+		return err
+	}
+	if _, err := c.RoleAdd(ctx, rootRoleName); err != nil {
+		return err
+	}
+	if _, err := c.UserGrantRole(ctx, rootUserName, rootRoleName); err != nil {
+		return err
+	}
+	if _, err := c.UserAdd(ctx, testUserName, testUserPassword, config.UserAddOptions{}); err != nil {
+		return err
+	}
+	if _, err := c.RoleAdd(ctx, testRoleName); err != nil {
+		return err
+	}
+	if _, err := c.UserGrantRole(ctx, testUserName, testRoleName); err != nil {
+		return err
+	}
+	if _, err := c.RoleGrantPermission(ctx, testRoleName, "key", "key0", clientv3.PermissionType(clientv3.PermReadWrite)); err != nil {
+		return err
+	}
+	if err := c.AuthEnable(ctx); err != nil {
+		return err
+	}
+	return nil
 }

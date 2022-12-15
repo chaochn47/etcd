@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -37,6 +38,7 @@ const (
 
 var (
 	KillFailpoint                            Failpoint = killFailpoint{}
+	WaitForSnapshotKillFailpoint             Failpoint = killFailpoint{waitForSnapshot: true}
 	DefragBeforeCopyPanic                    Failpoint = goPanicFailpoint{"defragBeforeCopy", triggerDefrag, AnyMember}
 	DefragBeforeRenamePanic                  Failpoint = goPanicFailpoint{"defragBeforeRename", triggerDefrag, AnyMember}
 	BeforeCommitPanic                        Failpoint = goPanicFailpoint{"beforeCommit", nil, AnyMember}
@@ -77,13 +79,15 @@ var (
 )
 
 type Failpoint interface {
-	Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster) error
+	Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster, lg *zap.Logger) error
 	Name() string
 }
 
-type killFailpoint struct{}
+type killFailpoint struct {
+	waitForSnapshot bool
+}
 
-func (f killFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster) error {
+func (f killFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster, lg *zap.Logger) error {
 	member := clus.Procs[rand.Int()%len(clus.Procs)]
 
 	killCtx, cancel := context.WithTimeout(ctx, triggerTimeout)
@@ -99,11 +103,74 @@ func (f killFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.Etcd
 		}
 	}
 
-	err := member.Start(ctx)
+	if f.waitForSnapshot {
+		endpoints := make([]string, 0, len(clus.EndpointsV3()))
+		for _, ed := range clus.EndpointsV3() {
+			if ed != member.EndpointsV3()[0] {
+				endpoints = append(endpoints, ed)
+			}
+		}
+		// 5000 is the default number of snapshot count catch up entries
+		// DefaultSnapshotCatchUpEntries = 5000
+		require.NoError(t, waitForSnapshot(ctx, endpoints, 6000, lg))
+	}
+
+	return member.Start(ctx)
+}
+
+func waitForSnapshot(ctx context.Context, endpoints []string, snapshotCount int64, lg *zap.Logger) error {
+	lg.Info("start waitForSnapshot, creating client",
+		zap.Strings("endpoints", endpoints),
+	)
+	cc, err := clientv3.New(clientv3.Config{
+		Endpoints:            endpoints,
+		Logger:               lg,
+		DialKeepAliveTime:    1 * time.Millisecond,
+		DialKeepAliveTimeout: 5 * time.Millisecond,
+		Username:             rootUserName,
+		Password:             rootUserPassword,
+	})
+	if err != nil {
+		lg.Warn("failed to create client", zap.Error(err))
+		return err
+	}
+	defer cc.Close()
+	initialRevision, err := getRevision(ctx, cc)
 	if err != nil {
 		return err
 	}
+	lg.Info("got revision",
+		zap.Int64("initial-revision", initialRevision),
+		zap.Int64("snapshot-catchup-count", snapshotCount),
+	)
+	for {
+		time.Sleep(time.Second)
+		rev, err := getRevision(ctx, cc)
+		if err != nil {
+			lg.Warn("failed to get revision", zap.Error(err))
+			return err
+		}
+		lg.Info("got revision",
+			zap.Int64("initial-revision", initialRevision),
+			zap.Int64("current-revision", rev),
+			zap.Int64("snapshot-catchup-count", snapshotCount),
+		)
+		if rev >= initialRevision+snapshotCount {
+			break
+		}
+	}
 	return nil
+}
+
+func getRevision(ctx context.Context, client *clientv3.Client) (revision int64, err error) {
+	if err != nil {
+		return 0, fmt.Errorf("failed creating client: %w", err)
+	}
+	resp, err := client.Get(ctx, "/")
+	if err != nil {
+		return 0, err
+	}
+	return resp.Header.Revision, nil
 }
 
 func (f killFailpoint) Name() string {
@@ -123,7 +190,7 @@ const (
 	Leader    failpointTarget = "Leader"
 )
 
-func (f goPanicFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster) error {
+func (f goPanicFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster, lg *zap.Logger) error {
 	member := f.pickMember(t, clus)
 	address := fmt.Sprintf("127.0.0.1:%d", member.Config().GoFailPort)
 
@@ -238,10 +305,10 @@ type randomFailpoint struct {
 	failpoints []Failpoint
 }
 
-func (f randomFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster) error {
+func (f randomFailpoint) Trigger(t *testing.T, ctx context.Context, clus *e2e.EtcdProcessCluster, lg *zap.Logger) error {
 	failpoint := f.failpoints[rand.Int()%len(f.failpoints)]
 	t.Logf("Triggering %v failpoint\n", failpoint.Name())
-	return failpoint.Trigger(t, ctx, clus)
+	return failpoint.Trigger(t, ctx, clus, lg)
 }
 
 func (f randomFailpoint) Name() string {

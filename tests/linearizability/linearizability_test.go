@@ -25,7 +25,10 @@ import (
 	"time"
 
 	"github.com/anishathalye/porcupine"
+	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/tests/v3/framework/e2e"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest"
 	"golang.org/x/time/rate"
 )
 
@@ -44,31 +47,44 @@ func TestLinearizability(t *testing.T) {
 		name      string
 		failpoint Failpoint
 		config    e2e.EtcdProcessClusterConfig
+		traffic   Traffic
 	}{
+		//{
+		//	name:      "ClusterOfSize1",
+		//	failpoint: RandomFailpoint,
+		//	config: *e2e.NewConfig(
+		//		e2e.WithClusterSize(1),
+		//		e2e.WithGoFailEnabled(true),
+		//		e2e.WithCompactionBatchLimit(100), // required for compactBeforeCommitBatch and compactAfterCommitBatch failpoints
+		//	),
+		//	traffic: DefaultTraffic,
+		//},
+		//{
+		//	name:      "ClusterOfSize3",
+		//	failpoint: RandomFailpoint,
+		//	config: *e2e.NewConfig(
+		//		e2e.WithGoFailEnabled(true),
+		//		e2e.WithCompactionBatchLimit(100), // required for compactBeforeCommitBatch and compactAfterCommitBatch failpoints
+		//	),
+		//	traffic: DefaultTraffic,
+		//},
+		//{
+		//	name:      "Issue14370",
+		//	failpoint: RaftBeforeSavePanic,
+		//	config: *e2e.NewConfig(
+		//		e2e.WithClusterSize(1),
+		//		e2e.WithGoFailEnabled(true),
+		//	),
+		//	traffic: DefaultTraffic,
+		//},
 		{
-			name:      "ClusterOfSize1",
-			failpoint: RandomFailpoint,
+			name:      "Issue14571",
+			failpoint: WaitForSnapshotKillFailpoint,
 			config: *e2e.NewConfig(
-				e2e.WithClusterSize(1),
-				e2e.WithGoFailEnabled(true),
-				e2e.WithCompactionBatchLimit(100), // required for compactBeforeCommitBatch and compactAfterCommitBatch failpoints
+				e2e.WithClusterSize(3),
+				e2e.WithSnapshotCount(2),
 			),
-		},
-		{
-			name:      "ClusterOfSize3",
-			failpoint: RandomFailpoint,
-			config: *e2e.NewConfig(
-				e2e.WithGoFailEnabled(true),
-				e2e.WithCompactionBatchLimit(100), // required for compactBeforeCommitBatch and compactAfterCommitBatch failpoints
-			),
-		},
-		{
-			name:      "Issue14370",
-			failpoint: RaftBeforeSavePanic,
-			config: *e2e.NewConfig(
-				e2e.WithClusterSize(1),
-				e2e.WithGoFailEnabled(true),
-			),
+			traffic: DefaultTrafficWithAuth,
 		},
 	}
 	for _, tc := range tcs {
@@ -77,20 +93,21 @@ func TestLinearizability(t *testing.T) {
 				failpoint:           tc.failpoint,
 				count:               1,
 				retries:             3,
-				waitBetweenTriggers: waitBetweenFailpointTriggers,
+				waitBetweenTriggers: 10 * time.Second, // wait for another 10 seconds after trigger WaitForSnapshotKillFailpoint instead of default 1 second
 			}
-			traffic := trafficConfig{
+			trafficCfg := trafficConfig{
 				minimalQPS:  minimalQPS,
 				maximalQPS:  maximalQPS,
 				clientCount: 8,
-				traffic:     DefaultTraffic,
+				traffic:     tc.traffic,
 			}
-			testLinearizability(context.Background(), t, tc.config, failpoint, traffic)
+			lg := zaptest.NewLogger(t, zaptest.WrapOptions(zap.AddCaller())).Named(tc.name)
+			testLinearizability(context.Background(), t, tc.config, failpoint, trafficCfg, lg)
 		})
 	}
 }
 
-func testLinearizability(ctx context.Context, t *testing.T, config e2e.EtcdProcessClusterConfig, failpoint FailpointConfig, traffic trafficConfig) {
+func testLinearizability(ctx context.Context, t *testing.T, config e2e.EtcdProcessClusterConfig, failpoint FailpointConfig, traffic trafficConfig, lg *zap.Logger) {
 	clus, err := e2e.NewEtcdProcessCluster(ctx, t, e2e.WithConfig(&config))
 	if err != nil {
 		t.Fatal(err)
@@ -99,12 +116,12 @@ func testLinearizability(ctx context.Context, t *testing.T, config e2e.EtcdProce
 	ctx, cancel := context.WithCancel(ctx)
 	go func() {
 		defer cancel()
-		err := triggerFailpoints(ctx, t, clus, failpoint)
+		err := triggerFailpoints(ctx, t, clus, failpoint, lg)
 		if err != nil {
 			t.Error(err)
 		}
 	}()
-	operations := simulateTraffic(ctx, t, clus, traffic)
+	operations := simulateTraffic(ctx, t, clus, traffic, lg)
 	err = clus.Stop()
 	if err != nil {
 		t.Error(err)
@@ -112,13 +129,13 @@ func testLinearizability(ctx context.Context, t *testing.T, config e2e.EtcdProce
 	checkOperationsAndPersistResults(t, operations, clus)
 }
 
-func triggerFailpoints(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessCluster, config FailpointConfig) error {
+func triggerFailpoints(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessCluster, config FailpointConfig, lg *zap.Logger) error {
 	var err error
 	successes := 0
 	failures := 0
 	for successes < config.count && failures < config.retries {
 		time.Sleep(config.waitBetweenTriggers)
-		err = config.failpoint.Trigger(t, ctx, clus)
+		err = config.failpoint.Trigger(t, ctx, clus, lg)
 		if err != nil {
 			t.Logf("Failed to trigger failpoint %q, err: %v\n", config.failpoint.Name(), err)
 			failures++
@@ -140,7 +157,9 @@ type FailpointConfig struct {
 	waitBetweenTriggers time.Duration
 }
 
-func simulateTraffic(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessCluster, config trafficConfig) []porcupine.Operation {
+func simulateTraffic(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessCluster, config trafficConfig, lg *zap.Logger) []porcupine.Operation {
+	require.NoError(t, config.traffic.PreRun(ctx, clus.Client(), lg))
+
 	mux := sync.Mutex{}
 	endpoints := clus.EndpointsV3()
 
@@ -150,10 +169,13 @@ func simulateTraffic(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessClu
 
 	startTime := time.Now()
 	wg := sync.WaitGroup{}
+
+	cwg := sync.WaitGroup{}
 	for i := 0; i < config.clientCount; i++ {
 		wg.Add(1)
 		endpoints := []string{endpoints[i%len(endpoints)]}
-		c, err := NewClient(endpoints, ids)
+		cwg.Add(1)
+		c, err := NewClient(endpoints, ids, clientOption(config.traffic.AuthEnabled(), i))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,19 +183,25 @@ func simulateTraffic(ctx context.Context, t *testing.T, clus *e2e.EtcdProcessClu
 			defer wg.Done()
 			defer c.Close()
 
+			cwg.Wait()
 			config.traffic.Run(ctx, c, limiter, ids)
 			mux.Lock()
 			h = h.Merge(c.history.history)
 			mux.Unlock()
 		}(c)
 	}
+
+	for i := 0; i < config.clientCount; i++ {
+		cwg.Done()
+	}
+
 	wg.Wait()
 	endTime := time.Now()
 	operations := h.Operations()
-	t.Logf("Recorded %d operations", len(operations))
+	lg.Info("Recorded operations", zap.Int("num-of-operation", len(operations)))
 
 	qps := float64(len(operations)) / float64(endTime.Sub(startTime)) * float64(time.Second)
-	t.Logf("Average traffic: %f qps", qps)
+	lg.Info("Average traffic", zap.Float64("qps", qps))
 	if qps < config.minimalQPS {
 		t.Errorf("Requiring minimal %f qps for test results to be reliable, got %f qps", config.minimalQPS, qps)
 	}

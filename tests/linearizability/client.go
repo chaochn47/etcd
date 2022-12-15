@@ -28,13 +28,17 @@ type recordingClient struct {
 	history *appendableHistory
 }
 
-func NewClient(endpoints []string, ids idProvider) (*recordingClient, error) {
-	cc, err := clientv3.New(clientv3.Config{
+func NewClient(endpoints []string, ids idProvider, ops ...option) (*recordingClient, error) {
+	cfg := &clientv3.Config{
 		Endpoints:            endpoints,
 		Logger:               zap.NewNop(),
 		DialKeepAliveTime:    1 * time.Millisecond,
 		DialKeepAliveTimeout: 5 * time.Millisecond,
-	})
+	}
+	for _, op := range ops {
+		op(cfg)
+	}
+	cc, err := clientv3.New(*cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -92,4 +96,26 @@ func (c *recordingClient) Txn(ctx context.Context, key, expectedValue, newValue 
 	returnTime := time.Now()
 	c.history.AppendTxn(key, expectedValue, newValue, callTime, returnTime, resp, err)
 	return err
+}
+
+type option func(*clientv3.Config)
+
+func noOpOption() option { return func(*clientv3.Config) {} }
+
+func withAuth(username, password string) option {
+	return func(cfg *clientv3.Config) {
+		cfg.Username = username
+		cfg.Password = password
+	}
+}
+
+func clientOption(authEnabled bool, clientIndex int) option {
+	if !authEnabled {
+		return noOpOption()
+	}
+	if clientIndex%2 == 0 {
+		return withAuth(rootUserName, rootUserPassword)
+	} else {
+		return withAuth(testUserName, testUserPassword)
+	}
 }
