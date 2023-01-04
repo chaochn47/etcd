@@ -249,7 +249,7 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 	c.Lock()
 	defer c.Unlock()
 
-	c.members, c.removed = membersFromStore(c.lg, c.v2store)
+	c.members, c.removed = MembersFromStore(c.lg, c.v2store)
 	c.version = clusterVersionFromStore(c.lg, c.v2store)
 	mustDetectDowngrade(c.lg, c.version, c.unsafeAllowDowngrade)
 	onSet(c.lg, c.version)
@@ -282,7 +282,7 @@ func (c *RaftCluster) Recover(onSet func(*zap.Logger, *semver.Version)) {
 // ValidateConfigurationChange takes a proposed ConfChange and
 // ensures that it is still valid.
 func (c *RaftCluster) ValidateConfigurationChange(cc raftpb.ConfChange) error {
-	members, removed := membersFromStore(c.lg, c.v2store)
+	members, removed := MembersFromStore(c.lg, c.v2store)
 	id := types.ID(cc.NodeID)
 	if removed[id] {
 		return ErrIDRemoved
@@ -693,7 +693,7 @@ func (c *RaftCluster) IsReadyToPromoteMember(id uint64) bool {
 	return true
 }
 
-func membersFromStore(lg *zap.Logger, st v2store.Store) (map[types.ID]*Member, map[types.ID]bool) {
+func MembersFromStore(lg *zap.Logger, st v2store.Store) (map[types.ID]*Member, map[types.ID]bool) {
 	members := make(map[types.ID]*Member)
 	removed := make(map[types.ID]bool)
 	e, err := st.Get(StoreMembersPrefix, true, true)

@@ -17,12 +17,20 @@ package integration
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+	"go.etcd.io/etcd/etcdserver/api/membership"
+	"go.etcd.io/etcd/etcdserver/api/snap/snappb"
+	"go.etcd.io/etcd/etcdserver/api/v2store"
 	"go.etcd.io/etcd/etcdserver/api/v3rpc/rpctypes"
 	pb "go.etcd.io/etcd/etcdserver/etcdserverpb"
 	"go.etcd.io/etcd/lease/leasepb"
@@ -30,6 +38,8 @@ import (
 	"go.etcd.io/etcd/mvcc/backend"
 	"go.etcd.io/etcd/pkg/testutil"
 	"go.etcd.io/etcd/pkg/traceutil"
+	"go.etcd.io/etcd/pkg/types"
+	"go.etcd.io/etcd/raft/raftpb"
 	"go.uber.org/zap/zaptest"
 
 	"go.uber.org/zap"
@@ -258,6 +268,107 @@ func TestV3CorruptAlarm(t *testing.T) {
 		time.Sleep(time.Second)
 	}
 	t.Fatalf("expected error %v after %s", rpctypes.ErrCorrupt, 5*time.Second)
+}
+
+func TestReproduceMemberNameMismatch(t *testing.T) {
+	defer testutil.AfterTest(t)
+	clus := NewClusterV3(t, &ClusterConfig{
+		CorruptCheckTime:       time.Second,
+		Size:                   3,
+		SnapshotCount:          10,
+		SnapshotCatchUpEntries: 5,
+	})
+	defer clus.Terminate(t)
+
+	for _, member := range clus.Members {
+		t.Logf("initial member name %s", member.Name)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	putr := &pb.PutRequest{Key: []byte("foo"), Value: []byte("bar")}
+	// Trigger snapshot from the leader to new member
+	for i := 0; i < 15; i++ {
+		_, err := toGRPC(clus.RandClient()).KV.Put(ctx, putr)
+		if err != nil {
+			t.Errorf("#%d: couldn't put key (%v)", i, err)
+		}
+	}
+
+	t.Logf("triggered snapshot by 15 consecutive puts")
+
+	clus.Members[2].Stop(t)
+	clus.Members[2].Name = "random"
+	clus.Members[2].Restart(t)
+	time.Sleep(2 * time.Second)
+	t.Logf("restarted 3rd member with a new name random")
+
+	clus.Members[1].Stop(t)
+	time.Sleep(time.Second)
+	snapDir := filepath.Join(clus.Members[1].DataDir, "member", "snap")
+
+	dir, err := os.Open(snapDir)
+	require.NoError(t, err)
+	defer dir.Close()
+	names, err := dir.Readdirnames(-1)
+	snapNames := make([]string, 0, len(names))
+	for _, name := range names {
+		if name == "db" {
+			continue
+		}
+		snapNames = append(snapNames, name)
+	}
+	sort.Sort(sort.Reverse(sort.StringSlice(snapNames)))
+	t.Logf("snap files names %v", snapNames)
+
+	fpath := filepath.Join(snapDir, names[0])
+	b, err := ioutil.ReadFile(fpath)
+	require.NoError(t, err)
+	var serializedSnap snappb.Snapshot
+	require.NoError(t, serializedSnap.Unmarshal(b))
+
+	var snap raftpb.Snapshot
+	require.NoError(t, snap.Unmarshal(serializedSnap.Data))
+
+	st := v2store.New("/0", "/1")
+	require.NoError(t, st.Recovery(snap.Data))
+
+	membersFromV2Store, _ := membership.MembersFromStore(zap.NewExample(), st)
+	// expect name1, name2 and random
+	// but name1, name2 and name3
+	for _, member := range membersFromV2Store {
+		t.Logf("v2store: eventual member name from member B point of view %s", member.Name)
+	}
+
+	fp := filepath.Join(clus.Members[1].DataDir, "member", "snap", "db")
+	bcfg := backend.DefaultBackendConfig()
+	bcfg.Path = fp
+	bcfg.Logger = zaptest.NewLogger(t)
+	be := backend.New(bcfg)
+	tx := be.ReadTx()
+	membersBucketName := []byte("members")
+
+	membersFromBackend := make([]membership.Member, 0, 3)
+	require.NoError(t, tx.UnsafeForEach(membersBucketName, func(k, v []byte) error {
+		var m membership.Member
+		if err := json.Unmarshal(v, &m); err != nil {
+			return err
+		}
+		var id types.ID
+		if id, err = types.IDFromString(string(k)); err != nil {
+			return err
+		}
+		if m.ID != id {
+			return fmt.Errorf("member ID is different, key is %s, ID in value is %s", id, m.ID)
+		}
+		membersFromBackend = append(membersFromBackend, m)
+		return nil
+	}))
+	for _, member := range membersFromBackend {
+		t.Logf("v3Backend (boltdb): eventual member name from member B point of view %s", member.Name)
+	}
+	require.NoError(t, be.Close())
 }
 
 var leaseBucketName = []byte("lease")

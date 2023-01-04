@@ -292,7 +292,7 @@ func (s *store) compact(trace *traceutil.Trace, rev int64) (<-chan struct{}, err
 	}
 
 	s.fifoSched.Schedule(j)
-	trace.Step("schedule compaction")
+	trace.Step("s")
 	return ch, nil
 }
 
