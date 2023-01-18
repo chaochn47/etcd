@@ -18,12 +18,13 @@ import (
 	"context"
 	"time"
 
-	"go.uber.org/zap"
-
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.etcd.io/etcd/tests/v3/framework/config"
+	"go.etcd.io/etcd/tests/v3/framework/integration"
 	"go.etcd.io/etcd/tests/v3/linearizability/identity"
 	"go.etcd.io/etcd/tests/v3/linearizability/model"
+	"go.uber.org/zap"
 )
 
 type recordingClient struct {
@@ -31,13 +32,17 @@ type recordingClient struct {
 	history *model.AppendableHistory
 }
 
-func NewClient(endpoints []string, ids identity.Provider) (*recordingClient, error) {
-	cc, err := clientv3.New(clientv3.Config{
+func NewClient(endpoints []string, ids identity.Provider, opts ...config.ClientOption) (*recordingClient, error) {
+	cfg := &clientv3.Config{
 		Endpoints:            endpoints,
 		Logger:               zap.NewNop(),
 		DialKeepAliveTime:    1 * time.Millisecond,
 		DialKeepAliveTimeout: 5 * time.Millisecond,
-	})
+	}
+	for _, opt := range opts {
+		opt(cfg)
+	}
+	cc, err := clientv3.New(*cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -124,4 +129,11 @@ func (c *recordingClient) PutWithLease(ctx context.Context, key string, value st
 	returnTime := time.Now()
 	c.history.AppendPutWithLease(key, value, int64(leaseId), callTime, returnTime, resp, err)
 	return err
+}
+
+func clientOption(authEnabled bool) config.ClientOption {
+	if !authEnabled {
+		return func(any) {}
+	}
+	return integration.WithAuth(rootUserName, rootUserPassword)
 }
