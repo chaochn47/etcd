@@ -1,8 +1,8 @@
 name: Measure Test Flakiness
 
-on:
-  schedule:
-    - cron: "0 0 * * 0" # run every Sunday at midnight
+on: [push]
+#  schedule:
+#    - cron: "0 0 * * 0" # run every Sunday at midnight
 
 permissions: read-all
 
