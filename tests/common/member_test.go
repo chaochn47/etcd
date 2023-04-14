@@ -239,6 +239,25 @@ func TestMemberRemove(t *testing.T) {
 	}
 }
 
+func TestReproduce15710(t *testing.T) {
+	testRunner.BeforeTest(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	clus := testRunner.NewCluster(ctx, t, config.WithClusterSize(3))
+	defer clus.Close()
+
+	//time.Sleep(etcdserver.HealthInterval)
+	gresp, err := clus.Members()[0].Client().Get(ctx, "foo", config.GetOptions{})
+	require.NoError(t, err)
+	stoppedMemberID := gresp.Header.MemberId
+	clus.Members()[0].Stop()
+
+	cc, err := clus.Client(WithEndpoints(clus.Endpoints()[1:]))
+	require.NoError(t, err)
+	_, err = cc.MemberRemove(ctx, stoppedMemberID)
+	require.NoError(t, err)
+}
+
 // memberToRemove chooses a member to remove.
 // If clusterSize == 1, return the only member.
 // Otherwise, return a member that client has not connected to.

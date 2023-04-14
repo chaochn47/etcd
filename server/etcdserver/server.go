@@ -1547,6 +1547,7 @@ func (s *EtcdServer) mayRemoveMember(id types.ID) error {
 
 	// downed member is safe to remove since it's not part of the active quorum
 	if t := s.r.transport.ActiveSince(id); id != s.MemberId() && t.IsZero() {
+		lg.Info("member is not active, safe to remove", zap.String("requested-member-remove", id.String()))
 		return nil
 	}
 
