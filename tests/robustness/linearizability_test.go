@@ -274,5 +274,5 @@ func forcestopCluster(clus *e2e.EtcdProcessCluster) error {
 	for _, member := range clus.Procs {
 		member.Kill()
 	}
-	return clus.ConcurrentStop()
+	return clus.Stop()
 }
