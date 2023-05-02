@@ -1,7 +1,5 @@
 name: E2E-arm64
-on:
-  schedule:
-    - cron: '0 1 * * *' # runs daily at 1am.
+on: [push]
 permissions: read-all
 jobs:
   goversion:
