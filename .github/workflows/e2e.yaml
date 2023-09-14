@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           go clean -testcache
+          make gofail-enable
 
           echo "${TARGET}"
           case "${TARGET}" in
