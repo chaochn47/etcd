@@ -22,6 +22,8 @@ import (
 
 	"github.com/dustin/go-humanize"
 
+	"go.etcd.io/raft/v3"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	"go.etcd.io/etcd/api/v3/version"
@@ -32,7 +34,6 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/backend"
 	"go.etcd.io/etcd/server/v3/storage/mvcc"
 	"go.etcd.io/etcd/server/v3/storage/schema"
-	"go.etcd.io/raft/v3"
 
 	"go.uber.org/zap"
 )
@@ -75,10 +76,11 @@ type maintenanceServer struct {
 	cs     ClusterStatusGetter
 	d      Downgrader
 	vs     serverversion.Server
+	hs     healthNotifier
 }
 
-func NewMaintenanceServer(s *etcdserver.EtcdServer) pb.MaintenanceServer {
-	srv := &maintenanceServer{lg: s.Cfg.Logger, rg: s, hasher: s.KV().HashStorage(), bg: s, a: s, lt: s, hdr: newHeader(s), cs: s, d: s, vs: etcdserver.NewServerVersionAdapter(s)}
+func NewMaintenanceServer(s *etcdserver.EtcdServer, hs healthNotifier) pb.MaintenanceServer {
+	srv := &maintenanceServer{lg: s.Cfg.Logger, rg: s, hasher: s.KV().HashStorage(), bg: s, a: s, lt: s, hdr: newHeader(s), cs: s, d: s, vs: etcdserver.NewServerVersionAdapter(s), hs: hs}
 	if srv.lg == nil {
 		srv.lg = zap.NewNop()
 	}
@@ -87,6 +89,8 @@ func NewMaintenanceServer(s *etcdserver.EtcdServer) pb.MaintenanceServer {
 
 func (ms *maintenanceServer) Defragment(ctx context.Context, sr *pb.DefragmentRequest) (*pb.DefragmentResponse, error) {
 	ms.lg.Info("starting defragment")
+	ms.hs.StopServe("defrag is active")
+	defer ms.hs.StartServe()
 	err := ms.bg.Backend().Defrag()
 	if err != nil {
 		ms.lg.Warn("failed to defragment", zap.Error(err))
