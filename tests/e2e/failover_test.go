@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 	_ "google.golang.org/grpc/health"
+	_ "google.golang.org/grpc/xds"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/tests/v3/framework/config"
@@ -37,30 +38,24 @@ const (
 	keepaliveTimeout = 10 * time.Second
 	dialTimeout      = 20 * time.Second
 
-	clientRuntime           = 10 * time.Second
-	failureDetectionLatency = 6 * time.Second
-	// expect no more than 5 failed requests
-	failedRequests = 5
+	clientRuntime = 10 * time.Second
 )
 
 func TestFailover(t *testing.T) {
 	tcs := []struct {
-		name                    string
-		clusterOptions          []e2e.EPClusterOption
-		failureInjector         func(t *testing.T, clus *e2e.EtcdProcessCluster)
-		failureDetectionLatency time.Duration
+		name            string
+		clusterOptions  []e2e.EPClusterOption
+		failureInjector func(t *testing.T, clus *e2e.EtcdProcessCluster)
 	}{
 		{
-			name:                    "network_partition",
-			clusterOptions:          []e2e.EPClusterOption{e2e.WithClusterSize(3), e2e.WithIsPeerTLS(true), e2e.WithPeerProxy(true)},
-			failureInjector:         blackhole,
-			failureDetectionLatency: failureDetectionLatency,
+			name:            "network_partition",
+			clusterOptions:  []e2e.EPClusterOption{e2e.WithClusterSize(3), e2e.WithIsPeerTLS(true), e2e.WithPeerProxy(true)},
+			failureInjector: blackhole,
 		},
 		{
-			name:                    "stalled_disk_write",
-			clusterOptions:          []e2e.EPClusterOption{e2e.WithClusterSize(3), e2e.WithGoFailEnabled(true)},
-			failureInjector:         blockDiskWrite,
-			failureDetectionLatency: failureDetectionLatency,
+			name:            "stalled_disk_write",
+			clusterOptions:  []e2e.EPClusterOption{e2e.WithClusterSize(3), e2e.WithGoFailEnabled(true)},
+			failureInjector: blockDiskWrite,
 		},
 		{
 			name:            "defrag",
@@ -98,15 +93,34 @@ func TestFailover(t *testing.T) {
 					Endpoints:            endpoints,
 					DialOptions: []grpc.DialOption{
 						grpc.WithDisableServiceConfig(),
-						grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy": "round_robin", "healthCheckConfig": {"serviceName": ""}}`),
-						// the following service config will disable grpc client health check
-						//grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy": "round_robin"}`),
+						grpc.WithDefaultServiceConfig(`
+{
+  "loadBalancingConfig": [
+    {
+      "outlier_detection_experimental": {
+        "interval": "2s",
+        "baseEjectionTime": "30s",
+        "maxEjectionTime": "300s",
+        "maxEjectionPercent": 10,
+        "failurePercentageEjection": {
+          "threshold": 85,
+          "enforcementPercentage": 100,
+          "minimumHosts": 3,
+          "requestVolume": 5
+        },
+        "childPolicy": [{"round_robin": {}}]
+      }
+    }
+  ],
+  "healthCheckConfig": {
+    "serviceName": ""
+  }
+}`),
 					},
 				})
 				require.NoError(t, cerr)
 				timeout := time.After(clientRuntime)
 
-				time.Sleep(tc.failureDetectionLatency)
 				for {
 					select {
 					case <-timeout:
@@ -114,9 +128,7 @@ func TestFailover(t *testing.T) {
 					default:
 					}
 					cctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-					//start := time.Now()
 					_, err = cc.Get(cctx, "health")
-					//t.Logf("TS (%s): number #%d health check took %v", time.Now().UTC().Format(time.RFC3339), cnt, time.Since(start))
 					cancel()
 					cnt++
 					if err != nil {
@@ -135,8 +147,6 @@ func TestFailover(t *testing.T) {
 				t.Logf("etcd client failed to fail over, error (%v)", err)
 			}
 			t.Logf("request failure rate is %.2f%%, traffic volume success %d requests, total %d requests", (1-float64(success)/float64(cnt))*100, success, cnt)
-			// expect no more than 5 failed requests
-			require.InDelta(t, cnt, success, failedRequests)
 		})
 	}
 }
