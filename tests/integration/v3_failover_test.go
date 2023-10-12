@@ -21,12 +21,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
 
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	integration2 "go.etcd.io/etcd/tests/v3/framework/integration"
 	clientv3test "go.etcd.io/etcd/tests/v3/integration/clientv3"
+)
+
+const (
+	// in sync with how kubernetes uses etcd
+	// https://github.com/kubernetes/kubernetes/blob/release-1.28/staging/src/k8s.io/apiserver/pkg/storage/storagebackend/factory/etcd3.go#L59-L71
+	keepaliveTime    = 30 * time.Second
+	keepaliveTimeout = 10 * time.Second
+	dialTimeout      = 20 * time.Second
+
+	clientRuntime = 10 * time.Second
+	// expect no more than 5 failed requests
+	failedRequests = 5
 )
 
 func TestFailover(t *testing.T) {
@@ -171,4 +184,68 @@ func shouldRetry(err error) bool {
 		return true
 	}
 	return false
+}
+
+func TestFailoverOnDefrag(t *testing.T) {
+	integration2.BeforeTest(t, integration2.WithFailpoint("defragBeforeCopy", `sleep(10000)`))
+	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
+	defer clus.Terminate(t)
+	endpoints := clus.Endpoints()
+
+	cnt, success := 0, 0
+	donec := make(chan struct{})
+	errc := make(chan error, 1)
+
+	go func() {
+		var lastErr error
+		var cc *clientv3.Client
+		defer func() {
+			if cc != nil {
+				cc.Close()
+			}
+			errc <- lastErr
+			close(donec)
+			close(errc)
+		}()
+		cc, cerr := clientv3.New(clientv3.Config{
+			DialTimeout:          dialTimeout,
+			DialKeepAliveTime:    keepaliveTime,
+			DialKeepAliveTimeout: keepaliveTimeout,
+			Endpoints:            endpoints,
+			DialOptions: []grpc.DialOption{
+				grpc.WithDisableServiceConfig(),
+				grpc.WithDefaultServiceConfig(`{"loadBalancingPolicy": "round_robin", "healthCheckConfig": {"serviceName": ""}}`),
+			},
+		})
+		require.NoError(t, cerr)
+		timeout := time.After(clientRuntime)
+
+		for {
+			select {
+			case <-timeout:
+				return
+			default:
+			}
+			cctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			_, err := cc.Get(cctx, "health")
+			cancel()
+			cnt++
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			success++
+		}
+	}()
+	_, err := clus.Client(0).Defragment(context.Background(), endpoints[0])
+	require.NoError(t, err)
+
+	<-donec
+	err, ok := <-errc
+	if ok && err != nil {
+		t.Logf("etcd client failed to fail over, error (%v)", err)
+	}
+	t.Logf("request failure rate is %.2f%%, traffic volume success %d requests, total %d requests", (1-float64(success)/float64(cnt))*100, success, cnt)
+	// expect no more than 5 failed requests
+	require.InDelta(t, cnt, success, failedRequests)
 }
